@@ -93,6 +93,7 @@
 #include "svgflag.h"
 #include "tilespec.h"
 #include "themes_common.h"
+#include "tradeplanning.h"
 #include "update_queue.h"
 #include "voteinfo.h"
 #include "zoom.h"
@@ -252,6 +253,7 @@ static void client_game_init(void)
   attribute_init();
   agents_init();
   control_init();
+  trade_planning_init();
   link_marks_init();
   voteinfo_queue_init();
   server_options_init();
@@ -270,6 +272,7 @@ static void client_game_free(void)
 {
   editgui_popdown_all();
 
+  trade_planning_free();
   animations_free();
   mapimg_free();
   packhand_free();
@@ -300,6 +303,7 @@ static void client_game_reset(void)
 {
   editgui_popdown_all();
 
+  trade_planning_free();
   packhand_free();
   link_marks_free();
   control_free();
@@ -312,6 +316,7 @@ static void client_game_reset(void)
   attribute_init();
   agents_init();
   control_init();
+  trade_planning_init();
   link_marks_init();
 }
 

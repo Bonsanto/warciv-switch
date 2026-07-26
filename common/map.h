@@ -713,6 +713,18 @@ moves. Includes MAP_MAX_LINEAR_SIZE because a map can be non wrapping. */
 #define MAP_MIN_WETNESS          0
 #define MAP_MAX_WETNESS          100
 
+#define MAP_DEFAULT_RIVERS       7
+#define MAP_MIN_RIVERS           0
+#define MAP_MAX_RIVERS           100
+
+#define MAP_DEFAULT_LAKES        15
+#define MAP_MIN_LAKES            0
+#define MAP_MAX_LAKES            100
+
+#define MAP_DEFAULT_ISLANDSHAPE  0
+#define MAP_MIN_ISLANDSHAPE      0
+#define MAP_MAX_ISLANDSHAPE      100
+
 #define MAP_DEFAULT_GENERATOR    MAPGEN_RANDOM
 
 #define MAP_DEFAULT_STARTPOS     MAPSTARTPOS_DEFAULT

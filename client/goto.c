@@ -2001,6 +2001,56 @@ void send_goto_route(void)
 }
 
 /************************************************************************//**
+  Send orders to move the unit to the arbitrary tile and perform the given
+  action against it on arrival (from the neighbor tile when the action
+  prefers that, mirroring send_goto_route()). Unlike a plain goto this
+  needs no action decision from the user: the server executes the action
+  as the final order. Returns FALSE if no path is found.
+****************************************************************************/
+bool send_goto_tile_and_action(struct unit *punit, struct tile *ptile,
+                               action_id act_id)
+{
+  struct pf_parameter parameter;
+  struct pf_map *pfm;
+  struct pf_path *path;
+
+  fc_assert_ret_val(action_id_exists(act_id), FALSE);
+
+  goto_fill_parameter_base(&parameter, punit);
+  pfm = pf_map_new(&parameter);
+  path = pf_map_path(pfm, ptile);
+  pf_map_destroy(pfm);
+
+  if (path != nullptr) {
+    struct unit_order order;
+    struct tile *on_tile;
+
+    if (path->length > 1
+        && ((on_tile = path->positions[path->length - 2].tile))
+        && order_wants_direction(ORDER_PERFORM_ACTION, act_id, ptile, punit)
+        && !same_pos(on_tile, ptile)) {
+      /* The action prefers to be performed from the tile next to the
+       * target; stop there. The target is still given by index below. */
+      pf_path_backtrack(path, on_tile);
+    }
+
+    order.order = ORDER_PERFORM_ACTION;
+    order.dir = DIR8_ORIGIN;
+    order.activity = ACTIVITY_LAST;
+    order.target = tile_index(ptile);
+    order.sub_target = NO_TARGET;
+    order.action = act_id;
+
+    send_goto_path(punit, path, &order);
+    pf_path_destroy(path);
+
+    return TRUE;
+  } else {
+    return FALSE;
+  }
+}
+
+/************************************************************************//**
   Find the path to the nearest (fastest to reach) allied city for the
   unit, or nullptr if none is reachable.
 ****************************************************************************/

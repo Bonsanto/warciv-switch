@@ -188,6 +188,9 @@ void map_init(struct civ_map *imap, bool server_side)
     imap->server.animals = MAP_DEFAULT_ANIMALS;
     imap->server.landpercent = MAP_DEFAULT_LANDMASS;
     imap->server.wetness = MAP_DEFAULT_WETNESS;
+    imap->server.rivers = MAP_DEFAULT_RIVERS;
+    imap->server.lakes = MAP_DEFAULT_LAKES;
+    imap->server.islandshape = MAP_DEFAULT_ISLANDSHAPE;
     imap->server.steepness = MAP_DEFAULT_STEEPNESS;
     imap->server.generator = MAP_DEFAULT_GENERATOR;
     imap->server.startpos = MAP_DEFAULT_STARTPOS;

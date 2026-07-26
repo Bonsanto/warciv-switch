@@ -44,6 +44,7 @@
 #include "mapview.h"
 #include "packhand.h"
 #include "text.h"
+#include "tradeplanning.h"
 
 /* client/gui-gtk-5.0 */
 #include "citydlg.h"
@@ -1503,6 +1504,16 @@ void popup_action_selection(struct unit *actor_unit,
   struct city *actor_homecity;
 
   int button_id;
+
+  actor_unit_id = actor_unit->id;
+  if (trade_planning_handle_arrival(actor_unit, target_city, act_probs)) {
+    client_unit_init_act_prob_cache(actor_unit);
+    action_iterate(act) {
+      actor_unit->client.act_prob_cache[act] = act_probs[act];
+    } action_iterate_end;
+    diplomat_queue_handle_primary();
+    return;
+  }
 
   act_sel_dialog_data =
       act_data(ACTION_ANY, /* Not decided yet */

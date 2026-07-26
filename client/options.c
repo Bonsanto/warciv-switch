@@ -5560,6 +5560,7 @@ static void message_options_save(struct section_file *file,
 static void load_cma_preset(struct section_file *file, int i)
 {
   struct cm_parameter parameter;
+  int specialist_output;
   const char *name =
     secfile_lookup_str_default(file, "preset",
                                "cma.preset%d.name", i);
@@ -5578,10 +5579,73 @@ static void load_cma_preset(struct section_file *file, int i)
       secfile_lookup_bool_default(file, FALSE, "cma.preset%d.reqhappy", i);
   parameter.happy_factor =
       secfile_lookup_int_default(file, 0, "cma.preset%d.happyfactor", i);
+  specialist_output =
+      secfile_lookup_int_default(file, O_LAST,
+                                 "cma.preset%d.specialist_output", i);
+  if (specialist_output < 0 || specialist_output > O_LAST) {
+    parameter.specialist_output = O_LAST;
+  } else {
+    parameter.specialist_output = specialist_output;
+  }
   parameter.allow_disorder = FALSE;
   parameter.allow_specialists = TRUE;
 
   cmafec_preset_add(name, &parameter);
+}
+
+/************************************************************************//**
+  Replace the old local Rapture preset with the two specialist-aware
+  variants. Checking the complete parameter set avoids changing an unrelated
+  user preset that happens to have the same name.
+****************************************************************************/
+static void migrate_legacy_rapture_cma_preset(void)
+{
+  struct cm_parameter legacy;
+  struct cm_parameter replacement;
+  int legacy_index = -1;
+  int i;
+
+  cm_init_parameter(&legacy);
+  legacy.minimal_surplus[O_FOOD] = -20;
+  legacy.minimal_surplus[O_GOLD] = -20;
+  legacy.factor[O_FOOD] = 25;
+  legacy.factor[O_SHIELD] = 5;
+  legacy.factor[O_TRADE] = 0;
+  legacy.factor[O_GOLD] = 4;
+  legacy.factor[O_LUXURY] = 0;
+  legacy.factor[O_SCIENCE] = 4;
+  legacy.require_happy = TRUE;
+  legacy.happy_factor = 0;
+
+  for (i = 0; i < cmafec_preset_num(); i++) {
+    if (!strcmp(cmafec_preset_get_descr(i), "Rapture")
+        && cm_are_parameter_equal(cmafec_preset_get_parameter(i), &legacy)) {
+      legacy_index = i;
+      break;
+    }
+  }
+
+  if (legacy_index < 0) {
+    return;
+  }
+
+  cmafec_preset_remove(legacy_index);
+
+  cm_init_parameter(&replacement);
+  output_type_iterate(output) {
+    replacement.factor[output] = 0;
+  } output_type_iterate_end;
+  replacement.minimal_surplus[O_FOOD] = 1;
+  replacement.minimal_surplus[O_GOLD] = -20;
+  replacement.factor[O_SHIELD] = 5;
+  replacement.factor[O_GOLD] = 25;
+  replacement.require_happy = TRUE;
+  replacement.happy_factor = 0;
+
+  replacement.specialist_output = O_SCIENCE;
+  cmafec_preset_add(_("Rapture - Scientists"), &replacement);
+  replacement.specialist_output = O_GOLD;
+  cmafec_preset_add(_("Rapture - Taxmen"), &replacement);
 }
 
 /************************************************************************//**
@@ -5604,6 +5668,8 @@ static void save_cma_preset(struct section_file *file, int i)
                       "cma.preset%d.reqhappy", i);
   secfile_insert_int(file, pparam->happy_factor,
                      "cma.preset%d.happyfactor", i);
+  secfile_insert_int(file, pparam->specialist_output,
+                     "cma.preset%d.specialist_output", i);
 }
 
 /************************************************************************//**
@@ -6416,6 +6482,7 @@ void options_load(void)
     for (i = num - 1; i >= 0; i--) {
       load_cma_preset(sf, i);
     }
+    migrate_legacy_rapture_cma_preset();
   } else {
     create_default_cma_presets();
   }

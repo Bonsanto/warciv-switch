@@ -38,6 +38,7 @@
 #include "editor.h"
 #include "tilespec.h"
 #include "text.h"
+#include "tradeplanning.h"
 #include "zoom.h"
 
 /* client/agents */
@@ -223,8 +224,11 @@ gboolean left_butt_down_mapcanvas(GtkGestureClick *gesture, int n_press,
 
   state = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(gesture));
 
+  if (ptile && trade_planning_is_selecting()
+      && !(state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK))) {
+    trade_planning_toggle_tile(ptile);
   /* <SHIFT> + <CONTROL> + LMB : Adjust workers. */
-  if ((state & GDK_SHIFT_MASK) && (state & GDK_CONTROL_MASK)) {
+  } else if ((state & GDK_SHIFT_MASK) && (state & GDK_CONTROL_MASK)) {
     adjust_workers_button_pressed(x, y);
   } else if (state & GDK_CONTROL_MASK) {
     /* <CONTROL> + LMB : Quickselect a sea unit. */

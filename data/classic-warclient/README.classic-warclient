@@ -1,0 +1,28 @@
+=========================
+Classic Warclient Ruleset
+=========================
+
+This is Warciv's competitive variant of Freeciv's classic ruleset. It keeps
+the familiar classic game while restoring and extending Warclient-style play.
+
+Highlights
+----------
+
+- Four base trade routes per city with Warclient-style recurring revenue
+- Civ I/II-style research costs
+- Square city radius and matching city vision
+- Rapture-oriented city management presets
+- Classic settler population costs and competitive terrain timings
+- Support for Warciv's automatic caravan planning
+
+The accompanying ``classic-warclient-competitive.serv`` profile supplies the
+recommended map and server settings, including archipelago-shaped islands,
+independent lake and river density, and increased natural resources.
+
+From a build directory, launch the server with:
+
+  ./run.sh freeciv-server --read ../data/classic-warclient-competitive.serv
+
+Or select the ruleset alone with:
+
+  /ruleset classic-warclient

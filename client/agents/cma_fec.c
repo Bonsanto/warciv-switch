@@ -391,7 +391,8 @@ void create_default_cma_presets(void)
      .allow_disorder = FALSE,
      .allow_specialists = TRUE,
      .factor = {10, 5, 0, 4, 0, 4},
-     .happy_factor = 25
+     .happy_factor = 25,
+     .specialist_output = O_LAST
    },
    { /* prefer food */
      .minimal_surplus = {-20, 0, 0, -20, 0, 0},
@@ -399,7 +400,8 @@ void create_default_cma_presets(void)
      .allow_disorder = FALSE,
      .allow_specialists = TRUE,
      .factor = {25, 5, 0, 4, 0, 4},
-     .happy_factor = 0
+     .happy_factor = 0,
+     .specialist_output = O_LAST
    },
    { /* prefer prod */
      .minimal_surplus = {0, -20, 0, -20, 0, 0},
@@ -407,7 +409,8 @@ void create_default_cma_presets(void)
      .allow_disorder = FALSE,
      .allow_specialists = TRUE,
      .factor = {10, 25, 0, 4, 0, 4},
-     .happy_factor = 0
+     .happy_factor = 0,
+     .specialist_output = O_LAST
    },
    { /* prefer gold */
      .minimal_surplus = {0, 0, 0, -20, 0, 0},
@@ -415,7 +418,8 @@ void create_default_cma_presets(void)
      .allow_disorder = FALSE,
      .allow_specialists = TRUE,
      .factor = {10, 5, 0, 25, 0, 4},
-     .happy_factor = 0
+     .happy_factor = 0,
+     .specialist_output = O_LAST
    },
    { /* prefer science */
      .minimal_surplus = {0, 0, 0, -20, 0, 0},
@@ -423,7 +427,8 @@ void create_default_cma_presets(void)
      .allow_disorder = FALSE,
      .allow_specialists = TRUE,
      .factor = {10, 5, 0, 4, 0, 25},
-     .happy_factor = 0
+     .happy_factor = 0,
+     .specialist_output = O_LAST
    }
  };
  const char *names[ARRAY_SIZE(parameters)] = {

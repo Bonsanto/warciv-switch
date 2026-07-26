@@ -41,6 +41,7 @@
 #include "mapview_common.h"
 #include "options.h"
 #include "tilespec.h"
+#include "tradeplanning.h"
 #include "zoom.h"
 
 /* client/gui-gtk-5.0 */
@@ -90,6 +91,7 @@ enum menu_entry_grouping { MGROUP_SAFE =    0B00000001,
 
 static GMenu *options_menu = NULL;
 static GMenu *edit_menu = NULL;
+static GMenu *trade_menu = NULL;
 static GMenu *view_menu = NULL;
 static GMenu *gov_menu = NULL;
 static GMenu *unit_menu = NULL;
@@ -431,6 +433,21 @@ static void select_dialog_callback(GSimpleAction *action,
 static void rally_dialog_callback(GSimpleAction *action,
                                   GVariant *parameter,
                                   gpointer data);
+static void trade_add_all_callback(GSimpleAction *action,
+                                   GVariant *parameter,
+                                   gpointer data);
+static void trade_select_callback(GSimpleAction *action,
+                                  GVariant *parameter,
+                                  gpointer data);
+static void trade_calculate_callback(GSimpleAction *action,
+                                     GVariant *parameter,
+                                     gpointer data);
+static void trade_clear_callback(GSimpleAction *action,
+                                 GVariant *parameter,
+                                 gpointer data);
+static void trade_automatic_callback(GSimpleAction *action,
+                                     GVariant *parameter,
+                                     gpointer data);
 static void infra_dialog_callback(GSimpleAction *action,
                                   GVariant *parameter,
                                   gpointer data);
@@ -639,6 +656,23 @@ static struct menu_entry_info menu_entries[] =
   { "CLIENT_LUA_SCRIPT", N_("Client _Lua Script"),
     "lua_script", NULL, MGROUP_SAFE,
     NULL, FALSE },
+
+  /* Trade menu */
+  { "TRADE_ADD_ALL", N_("Add _All Cities"),
+    "trade_add_all", NULL, MGROUP_PLAYING,
+    NULL, FALSE },
+  { "TRADE_SELECT", N_("_Select City Locations"),
+    "trade_select", ACCL_MOD_KEY"<shift>t", MGROUP_PLAYING,
+    trade_select_callback, FALSE },
+  { "TRADE_CALCULATE", N_("_Calculate Trade Plan"),
+    "trade_calculate", NULL, MGROUP_PLAYING,
+    NULL, FALSE },
+  { "TRADE_CLEAR", N_("_Clear Trade Plan"),
+    "trade_clear", NULL, MGROUP_PLAYING,
+    NULL, FALSE },
+  { "TRADE_AUTOMATIC", N_("_Automatic Caravans"),
+    "trade_automatic", ACCL_MOD_KEY"j", MGROUP_PLAYING,
+    trade_automatic_callback, FALSE },
 
   /* View menu */
   { "SHOW_CITY_OUTLINES", N_("Cit_y Outlines"),
@@ -1105,6 +1139,10 @@ const GActionEntry acts[] = {
   { "scenario_props", scenario_properties_callback },
   { "scenario_save", save_scenario_callback },
   { "lua_script", client_lua_script_callback },
+
+  { "trade_add_all", trade_add_all_callback },
+  { "trade_calculate", trade_calculate_callback },
+  { "trade_clear", trade_clear_callback },
 
   { "center_view", center_view_callback },
   { "zoom_in", zoom_in_callback },
@@ -2275,6 +2313,66 @@ static void rally_dialog_callback(GSimpleAction *action,
 }
 
 /************************************************************************//**
+  Add all player cities to the trade planner.
+****************************************************************************/
+static void trade_add_all_callback(GSimpleAction *action,
+                                   GVariant *parameter,
+                                   gpointer data)
+{
+  trade_planning_add_all_cities();
+}
+
+/************************************************************************//**
+  Toggle selection of trade planning locations on the map.
+****************************************************************************/
+static void trade_select_callback(GSimpleAction *action,
+                                  GVariant *parameter,
+                                  gpointer data)
+{
+  struct menu_entry_info *info = data;
+
+  trade_planning_set_selecting(!trade_planning_is_selecting());
+  info->state = trade_planning_is_selecting();
+  g_menu_remove(trade_menu, 1);
+  menu_item_insert_unref(trade_menu, 1, create_toggle_menu_item(info));
+}
+
+/************************************************************************//**
+  Calculate a trade plan for the selected locations.
+****************************************************************************/
+static void trade_calculate_callback(GSimpleAction *action,
+                                     GVariant *parameter,
+                                     gpointer data)
+{
+  trade_planning_calculate();
+}
+
+/************************************************************************//**
+  Clear the selected locations and calculated trade plan.
+****************************************************************************/
+static void trade_clear_callback(GSimpleAction *action,
+                                 GVariant *parameter,
+                                 gpointer data)
+{
+  trade_planning_clear();
+}
+
+/************************************************************************//**
+  Toggle automatic caravan dispatch.
+****************************************************************************/
+static void trade_automatic_callback(GSimpleAction *action,
+                                     GVariant *parameter,
+                                     gpointer data)
+{
+  struct menu_entry_info *info = data;
+
+  trade_planning_set_automatic(!trade_planning_is_automatic());
+  info->state = trade_planning_is_automatic();
+  g_menu_remove(trade_menu, 4);
+  menu_item_insert_unref(trade_menu, 4, create_toggle_menu_item(info));
+}
+
+/************************************************************************//**
   Open infra placement dialog.
 ****************************************************************************/
 static void infra_dialog_callback(GSimpleAction *action,
@@ -3190,6 +3288,16 @@ static GMenu *setup_menus(GtkApplication *app)
 
   submenu_append_unref(menubar, _("_Edit"), G_MENU_MODEL(edit_menu));
 
+  trade_menu = g_menu_new();
+
+  menu_entry_init(trade_menu, "TRADE_ADD_ALL");
+  menu_entry_init(trade_menu, "TRADE_SELECT");
+  menu_entry_init(trade_menu, "TRADE_CALCULATE");
+  menu_entry_init(trade_menu, "TRADE_CLEAR");
+  menu_entry_init(trade_menu, "TRADE_AUTOMATIC");
+
+  submenu_append_unref(menubar, _("_Trade"), G_MENU_MODEL(trade_menu));
+
   view_menu = g_menu_new();
 
   menu_entry_init(view_menu, "SHOW_CITY_OUTLINES");
@@ -3846,6 +3954,20 @@ void real_menus_update(void)
                                  && can_client_issue_orders()
                                  && !editor_is_active());
 
+  info = menu_entry_info_find("TRADE_SELECT");
+  if (info->state != trade_planning_is_selecting()) {
+    info->state = trade_planning_is_selecting();
+    g_menu_remove(trade_menu, 1);
+    menu_item_insert_unref(trade_menu, 1, create_toggle_menu_item(info));
+  }
+
+  info = menu_entry_info_find("TRADE_AUTOMATIC");
+  if (info->state != trade_planning_is_automatic()) {
+    info->state = trade_planning_is_automatic();
+    g_menu_remove(trade_menu, 4);
+    menu_item_insert_unref(trade_menu, 4, create_toggle_menu_item(info));
+  }
+
   menu_entry_set_sensitive(map, "CENTER_VIEW", can_client_issue_orders());
   menu_entry_set_sensitive(map, "VOLUME_UP", !audio_is_dummy_plugin());
   menu_entry_set_sensitive(map, "VOLUME_DOWN", !audio_is_dummy_plugin());
@@ -3973,7 +4095,9 @@ void real_menus_update(void)
                                                TRUE));
 
   menu_entry_set_sensitive(map, "AUTO_WORKER",
-                           can_units_do(punits, can_unit_do_autoworker));
+                           can_units_do(punits, can_unit_do_autoworker)
+                           || units_can_do_action(punits,
+                                                  ACTION_TRADE_ROUTE, TRUE));
   menu_entry_set_sensitive(map, "UNIT_EXPLORE",
                            can_units_do_activity_client(punits, ACTIVITY_EXPLORE));
   menu_entry_set_sensitive(map, "UNIT_BOARD",

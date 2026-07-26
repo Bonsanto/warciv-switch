@@ -79,10 +79,11 @@
 #define SHOW_APPLY_RESULT_ON_SERVER_ERRORS              FALSE
 #define ALWAYS_APPLY_AT_SERVER                          FALSE
 
-#define SAVED_PARAMETER_SIZE                            30
+#define SAVED_PARAMETER_SIZE                            31
+#define SAVED_PARAMETER_SIZE_V3                         30
 #define SAVED_PARAMETER_SIZE_OLD                        29
 
-#define CMA_ATTR_VERSION                                3
+#define CMA_ATTR_VERSION                                4
 #define CMA_ATTR_VERSION_MIN_SUPPORTED                  2
 
 /*
@@ -576,7 +577,8 @@ bool cma_get_parameter(enum attr_city attr, int city_id,
                        struct cm_parameter *parameter)
 {
   size_t len;
-  char buffer[MAX(SAVED_PARAMETER_SIZE, SAVED_PARAMETER_SIZE_OLD)];
+  char buffer[MAX(SAVED_PARAMETER_SIZE,
+                  MAX(SAVED_PARAMETER_SIZE_V3, SAVED_PARAMETER_SIZE_OLD))];
   struct data_in din;
   int version, dummy;
 
@@ -587,13 +589,16 @@ bool cma_get_parameter(enum attr_city attr, int city_id,
   if (len == 0) {
     return FALSE;
   }
-  fc_assert_ret_val(len == SAVED_PARAMETER_SIZE || len == SAVED_PARAMETER_SIZE_OLD,
+  fc_assert_ret_val(len == SAVED_PARAMETER_SIZE
+                    || len == SAVED_PARAMETER_SIZE_V3
+                    || len == SAVED_PARAMETER_SIZE_OLD,
                     FALSE);
 
   dio_input_init(&din, buffer, len);
 
   dio_get_uint8_raw(&din, &version);
-  if (version > CMA_ATTR_VERSION && version < CMA_ATTR_VERSION_MIN_SUPPORTED) {
+  if (version > CMA_ATTR_VERSION
+      || version < CMA_ATTR_VERSION_MIN_SUPPORTED) {
     log_error("CMA data has a wrong version %d (expected %d)",
               version, CMA_ATTR_VERSION);
     return FALSE;
@@ -613,6 +618,12 @@ bool cma_get_parameter(enum attr_city attr, int city_id,
   dio_get_bool8_raw(&din, &parameter->require_happy);
   if (version > 2) {
     dio_get_bool8_raw(&din, &parameter->max_growth);
+  }
+  if (version > 3) {
+    dio_get_uint8_raw(&din, &dummy);
+    if (dummy <= O_LAST) {
+      parameter->specialist_output = dummy;
+    }
   }
 
   return TRUE;
@@ -643,6 +654,7 @@ void cma_set_parameter(enum attr_city attr, int city_id,
   dio_put_uint8_raw(&dout, 0); /* Dummy value; used to be factor_target. */
   dio_put_bool8_raw(&dout, parameter->require_happy);
   dio_put_bool8_raw(&dout, parameter->max_growth);
+  dio_put_uint8_raw(&dout, parameter->specialist_output);
 
   fc_assert(dio_output_used(&dout) == SAVED_PARAMETER_SIZE);
 

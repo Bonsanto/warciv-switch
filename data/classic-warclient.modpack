@@ -1,0 +1,11 @@
+[datafile]
+options = "+Freeciv-modpack-3.3-Devel-2024.Apr.14"
+
+[modpack]
+name = "classic-warclient"
+
+[components]
+ruleset = TRUE
+
+[ruleset]
+rulesetdir = "classic-warclient"

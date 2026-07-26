@@ -76,6 +76,7 @@
 #include "options.h"            /* For fill_xxx */
 #include "svgflag.h"
 #include "themes_common.h"
+#include "tradeplanning.h"
 
 #include "tilespec.h"
 
@@ -6544,7 +6545,8 @@ int fill_sprite_array(struct tileset *t,
 
   case LAYER_OVERLAYS:
     sprs += fill_city_overlays_sprite_array(t, sprs, ptile, citymode);
-    if (mapdeco_is_crosshair_set(ptile)) {
+    if (mapdeco_is_crosshair_set(ptile)
+        || trade_planning_tile_is_selected(ptile)) {
       ADD_SPRITE_SIMPLE(t->sprites.user.attention);
     }
     break;

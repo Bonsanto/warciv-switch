@@ -711,6 +711,8 @@ BV_DEFINE(bv_startpos_nations, MAX_NUM_STARTPOS_NATIONS);
 #define SPECENUM_VALUE0NAME "Classic"
 #define SPECENUM_VALUE1 TRS_SIMPLE
 #define SPECENUM_VALUE1NAME "Simple"
+#define SPECENUM_VALUE2 TRS_WARCLIENT
+#define SPECENUM_VALUE2NAME "Warclient"
 #include "specenum_gen.h"
 
 /* Used in the network protocol. */

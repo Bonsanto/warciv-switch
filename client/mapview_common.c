@@ -45,6 +45,7 @@
 #include "overview_common.h"
 #include "svgflag.h"
 #include "tilespec.h"
+#include "tradeplanning.h"
 #include "zoom.h"
 
 #include "mapview_common.h"
@@ -1726,6 +1727,20 @@ static void draw_trade_routes(void)
       draw_trade_routes_for_city(pcity);
     } city_list_iterate_end;
   }
+
+  trade_planning_route_list_iterate(trade_planning_routes(), proute) {
+    struct city *city1 = tile_city(proute->tile1);
+    struct city *city2 = tile_city(proute->tile2);
+
+    if (city1 == NULL || city2 == NULL
+        || !have_cities_trade_route(city1, city2)) {
+      draw_trade_route_line(
+        proute->tile1, proute->tile2,
+        proute->caravan_id == IDENTITY_NUMBER_ZERO
+        ? COLOR_MAPVIEW_TRADE_ROUTES_NO_BUILT
+        : COLOR_MAPVIEW_TRADE_ROUTES_SOME_BUILT);
+    }
+  } trade_planning_route_list_iterate_end;
 }
 
 /************************************************************************//**

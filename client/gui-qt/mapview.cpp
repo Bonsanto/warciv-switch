@@ -93,11 +93,14 @@ void draw_calculated_trade_routes(QPainter *painter)
       || gui()->trade_gen.cities.empty()) {
     return;
   }
-  pcolor = get_color(tileset, COLOR_MAPVIEW_TRADE_ROUTES_NO_BUILT);
   // Draw calculated trade routes
   if (gui_options.draw_city_trade_routes) {
 
     foreach (qgilles, gui()->trade_gen.lines) {
+      pcolor = get_color(tileset,
+                         qgilles.autocaravan_id != IDENTITY_NUMBER_ZERO
+                         ? COLOR_MAPVIEW_TRADE_ROUTES_SOME_BUILT
+                         : COLOR_MAPVIEW_TRADE_ROUTES_NO_BUILT);
       base_map_distance_vector(&dx, &dy, TILE_XY(qgilles.t1),
                                TILE_XY(qgilles.t2));
       map_to_gui_vector(tileset, 1.0, &w, &h, dx, dy);
@@ -110,10 +113,6 @@ void draw_calculated_trade_routes(QPainter *painter)
           && have_cities_trade_route(tile_city(qgilles.t1),
                                      tile_city(qgilles.t2))) {
         continue;
-      }
-
-      if (qgilles.autocaravan != nullptr) {
-        pcolor = get_color(tileset, COLOR_MAPVIEW_TRADE_ROUTES_SOME_BUILT);
       }
 
       pen.setColor(pcolor->qcolor);
@@ -1448,6 +1447,9 @@ void info_tile::update_font(const QString &name, const QFont &font)
 void qtg_start_turn()
 {
   show_new_turn_info();
+  if (gui()->trade_gen.autocaravans_enabled) {
+    gui()->trade_gen.dispatch_all_caravans();
+  }
   last_center_enemy = 0;
   last_center_capital = 0;
   last_center_player_city = 0;

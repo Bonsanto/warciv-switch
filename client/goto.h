@@ -52,6 +52,8 @@ void request_orders_cleared(struct unit *punit);
 void send_goto_path(struct unit *punit, struct pf_path *path,
                     struct unit_order *last_order);
 bool send_goto_tile(struct unit *punit, struct tile *ptile);
+bool send_goto_tile_and_action(struct unit *punit, struct tile *ptile,
+                               action_id act_id);
 bool send_rally_tile(struct city *pcity, struct tile *ptile, bool persistent);
 bool send_attack_tile(struct unit *punit, struct tile *ptile);
 void send_patrol_route(void);

@@ -1328,9 +1328,18 @@ void get_effect_list_req_text(const struct effect_list *plist,
 **************************************************************************/
 bool iterate_effect_cache(iec_cb cb, void *data)
 {
+  int effects_left;
+
   fc_assert_ret_val(cb != nullptr, FALSE);
 
+  /* Iterate over a snapshot of the current length. A callback may append
+   * compatibility effects; those new effects must not be processed again
+   * during the same pass. */
+  effects_left = effect_list_size(ruleset_cache.tracker);
   effect_list_iterate(ruleset_cache.tracker, peffect) {
+    if (effects_left-- <= 0) {
+      break;
+    }
     if (!cb(peffect, data)) {
       return FALSE;
     }

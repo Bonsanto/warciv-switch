@@ -1,0 +1,661 @@
+; Modifying this file:
+; You should not modify this file except to make bugfixes or
+; for other "maintenance". If you want to make custom changes,
+; you should create a new datadir subdirectory and copy this file
+; into that directory, and then modify that copy. Then use the
+; command "rulesetdir <mysubdir>" in the server to have freeciv
+; use your new customized file.
+
+; Note that the freeciv AI may not cope well with anything more
+; than minor changes.
+
+
+[datafile]
+description="Classic Warclient (v1-style) tech data for Freeciv"
+ruledit="3.3.90.13-dev"
+options="+Freeciv-ruleset-3.4-Devel-2025.Jan.17"
+format_version=50
+
+[control]
+; Names for custom tech flags. There can be up to 10 of these.
+; name          = rule name; In some circumstances user may see this
+;                 as part of some sentences, so try to make it descriptive
+;                 and sensible.
+; helptxt       = displayed in the help for advances with this flag (optional)
+
+flags={"name","helptxt"
+"Claim_Ocean","National borders expand freely into the ocean."
+"Claim_Ocean_Limited","National borders from oceanic sources expand freely."
+}
+
+; /* <-- avoid gettext warnings
+;
+; Tech classes, there can be up to 16:
+;
+; First one is the default one.
+; If there is none, tech classes feature is disabled
+;
+; name                    = translatable name as seen by user
+; rule_name               = (optional) internal name for savegames, rulesets
+;                           etc; if not present, "name" is used for this
+;                           purpose too. Since the name used in savegames must
+;                           not change, if you want to rename an item after a
+;                           ruleset has been released, you should set
+;                           "rule_name" to the original value of "name".
+; cost_pct                = how much techs of the class cost compared
+;                           to normal. Default is 100%.
+;
+; */ <-- avoid gettext warnings
+
+
+; /* <-- avoid gettext warnings
+;
+; Below: The individual advances, one per section.
+; The number can be variable, up to 400.
+;
+; The actual tag used (the * in [advance_*]) does not matter, except
+; it must be unique within this file, and it may be used in debug
+; output when reading this file.
+;
+; Notes:
+;
+; name          = translatable name as seen by user
+; rule_name     = (optional) internal name for savegames, rulesets etc; if
+;                 not present, "name" is used for this purpose too. Since
+;                 the name used in savegames must not change, if you want
+;                 to rename an item after a ruleset has been released, you
+;                 should set "rule_name" to the original value of "name".
+; class         = tech class this tech belongs to, if they have been defined.
+;                 Default is first one defined above.
+; req1, req2    = advances required before researching this one
+; root_req      = tech required before acquiring this tech, by any means.
+;                 All techs with any direct or indirect dependency on this
+;                 one will *also* have this root_req, as well as their own
+;                 and any others they inherit.
+;                 Giving "None" explicitly here prevents a tech from
+;                 inheriting root_reqs in this way, and stops root_req
+;                 inheritance through that tech.
+;                 Specifying a tech's root_req as itself means that the tech
+;                 can only be acquired by special means (nation's init_techs,
+;                 scripting, etc).
+; research_reqs = requirements before researching this one. Can have non
+;                 tech requirements because it is a requirement vector.
+;                 See doc/README.effects to learn more about requirement
+;                 vectors.
+;                 Requiring a tech here instead of in req1, req2 or
+;                 root_req is not supported yet.
+;                 Requirements that may become fulfilled during the game
+;                 when they weren't at the start of the game is not
+;                 supported yet.
+; flags         = special flag strings
+; graphic       = icon for technology
+; graphic_alt   = alternate icon
+; helptext      = optional help text string (set units ruleset for examples)
+; bonus_message = text seen when a player is the first to discover
+;                 an bonus tech. Must contain '%s' to mark place of the tech
+;                 gained.
+; cost          = if tech_cost_style is set to "Classic+" or "Experimental+",
+;                 this field is read for information on how much a tech
+;                 costs.
+;
+; Special values for req1 and req2 are "None" (first section below)
+; and "Never" (never available). If only one tech is required,
+; it should be listed as req1.
+;
+; As well as custom flags defined above, the following flag strings are
+; possible:
+;
+; "Bonus_Tech"          = player gets extra tech if reached first
+; "Bridge"              = "Settler" unit types can build extras that
+;                         require bridge when occurring with some other
+;                         extra. See "bridged_over" extra property in
+;                         terrain.ruleset.
+; "Build_Airborne"      = from now on can build air units (for use by AI)
+;
+; */ <-- avoid gettext warnings
+
+
+[advance_0]
+name=_("Advanced Flight")
+req1="Radio"
+req2="Machine Tools"
+graphic="a.advanced_flight"
+
+[advance_1]
+name=_("Alphabet")
+req1="None"
+req2="None"
+graphic="a.alphabet"
+
+[advance_2]
+name=_("Amphibious Warfare")
+req1="Navigation"
+req2="Tactics"
+graphic="a.amphibious_warfare"
+
+[advance_3]
+name=_("Astronomy")
+req1="Mysticism"
+req2="Mathematics"
+graphic="a.astronomy"
+
+[advance_4]
+name=_("Atomic Theory")
+req1="Theory of Gravity"
+req2="Physics"
+graphic="a.atomic_theory"
+
+[advance_5]
+name=_("Automobile")
+req1="Combustion"
+req2="Steel"
+graphic="a.automobile"
+helptext="Increases the population's contribution to pollution."
+
+[advance_6]
+name=_("Banking")
+req1="Trade"
+req2="The Republic"
+graphic="a.banking"
+
+[advance_7]
+name=_("Bridge Building")
+req1="Iron Working"
+req2="Construction"
+graphic="a.bridge_building"
+flags="Bridge"
+helptext="Allows roads to be built on river tiles."
+
+[advance_8]
+name=_("Bronze Working")
+req1="None"
+req2="None"
+graphic="a.bronze_working"
+
+[advance_9]
+name=_("Ceremonial Burial")
+req1="None"
+req2="None"
+graphic="a.ceremonial_burial"
+
+[advance_10]
+name=_("Chemistry")
+req1="University"
+req2="Medicine"
+graphic="a.chemistry"
+
+[advance_11]
+name=_("Chivalry")
+req1="Feudalism"
+req2="Horseback Riding"
+graphic="a.chivalry"
+
+[advance_12]
+name=_("Code of Laws")
+req1="Alphabet"
+req2="None"
+graphic="a.code_of_laws"
+
+[advance_13]
+name=_("Combined Arms")
+req1="Mobile Warfare"
+req2="Advanced Flight"
+graphic="a.combined_arms"
+
+[advance_14]
+name=_("Combustion")
+req1="Refining"
+req2="Explosives"
+graphic="a.combustion"
+
+[advance_15]
+name=_("Communism")
+req1="Philosophy"
+req2="Industrialization"
+graphic="a.communism"
+helptext="Reduces the effect of Cathedrals."
+
+[advance_16]
+name=_("Computers")
+req1="Mass Production"
+req2="Miniaturization"
+graphic="a.computers"
+
+[advance_17]
+name=_("Conscription")
+req1="Democracy"
+req2="Metallurgy"
+graphic="a.conscription"
+
+[advance_18]
+name=_("Construction")
+req1="Masonry"
+req2="Currency"
+graphic="a.construction"
+helptext="Allows Settlers, Workers and Engineers to build fortresses."
+
+[advance_19]
+name=_("Currency")
+req1="Bronze Working"
+req2="None"
+graphic="a.currency"
+
+[advance_20]
+name=_("Democracy")
+req1="Banking"
+req2="Invention"
+graphic="a.democracy"
+
+[advance_21]
+name=_("Economics")
+req1="Banking"
+req2="University"
+graphic="a.economics"
+
+[advance_22]
+name=_("Electricity")
+req1="Metallurgy"
+req2="Magnetism"
+graphic="a.electricity"
+helptext="Improves the effect of Colosseums."
+
+[advance_23]
+name=_("Electronics")
+req1="The Corporation"
+req2="Electricity"
+graphic="a.electronics"
+
+[advance_24]
+name=_("Engineering")
+req1="The Wheel"
+req2="Construction"
+graphic="a.engineering"
+
+[advance_25]
+name=_("Environmentalism")
+req1="Recycling"
+req2="Space Flight"
+graphic="a.environmentalism"
+
+[advance_26]
+name=_("Espionage")
+req1="Communism"
+req2="Democracy"
+graphic="a.espionage"
+
+[advance_27]
+name=_("Explosives")
+req1="Gunpowder"
+req2="Chemistry"
+graphic="a.explosives"
+
+[advance_28]
+name=_("Feudalism")
+req1="Warrior Code"
+req2="Monarchy"
+graphic="a.feudalism"
+
+[advance_29]
+name=_("Flight")
+req1="Combustion"
+req2="Theory of Gravity"
+graphic="a.flight"
+flags="Build_Airborne"
+helptext="Decreases one-time revenue from new trade routes."
+
+[advance_30]
+name=_("Fusion Power")
+req1="Nuclear Power"
+req2="Superconductors"
+graphic="a.fusion_power"
+
+[advance_31]
+name=_("Genetic Engineering")
+req1="Medicine"
+req2="The Corporation"
+graphic="a.genetic_engineering"
+
+[advance_32]
+name=_("Guerilla Warfare")
+req1="Communism"
+req2="Tactics"
+graphic="a.guerilla_warfare"
+
+[advance_33]
+name=_("Gunpowder")
+req1="Invention"
+req2="Iron Working"
+graphic="a.gunpowder"
+
+[advance_34]
+name=_("Horseback Riding")
+req1="None"
+req2="None"
+graphic="a.horseback_riding"
+
+[advance_35]
+name=_("Industrialization")
+req1="Railroad"
+req2="Banking"
+graphic="a.industrialization"
+helptext="Population will start contributing to pollution."
+
+[advance_36]
+name=_("Invention")
+req1="Engineering"
+req2="Literacy"
+graphic="a.invention"
+helptext="Increases units' vision when in fortresses."
+
+[advance_37]
+name=_("Iron Working")
+req1="Bronze Working"
+req2="Warrior Code"
+graphic="a.iron_working"
+
+[advance_38]
+name=_("Labor Union")
+req1="Mass Production"
+req2="Guerilla Warfare"
+graphic="a.labor_union"
+
+[advance_39]
+name=_("Laser")
+req1="Mass Production"
+req2="Nuclear Power"
+graphic="a.laser"
+
+[advance_40]
+name=_("Leadership")
+req1="Chivalry"
+req2="Gunpowder"
+graphic="a.leadership"
+
+[advance_41]
+name=_("Literacy")
+req1="Writing"
+req2="Code of Laws"
+graphic="a.literacy"
+
+[advance_42]
+name=_("Machine Tools")
+req1="Steel"
+req2="Tactics"
+graphic="a.machine_tools"
+
+[advance_43]
+name=_("Magnetism")
+req1="Iron Working"
+req2="Physics"
+graphic="a.magnetism"
+helptext="Allows establishing one more trade route from each city."
+
+[advance_44]
+name=_("Map Making")
+req1="Alphabet"
+req2="None"
+graphic="a.map_making"
+
+[advance_45]
+name=_("Masonry")
+req1="None"
+req2="None"
+graphic="a.masonry"
+
+[advance_46]
+name=_("Mass Production")
+req1="Automobile"
+req2="The Corporation"
+graphic="a.mass_production"
+helptext="Increases the population's contribution to pollution."
+
+[advance_47]
+name=_("Mathematics")
+req1="Alphabet"
+req2="Masonry"
+graphic="a.mathematics"
+
+[advance_48]
+name=_("Medicine")
+req1="Philosophy"
+req2="Trade"
+graphic="a.medicine"
+
+[advance_49]
+name=_("Metallurgy")
+req1="Gunpowder"
+req2="University"
+graphic="a.metallurgy"
+
+[advance_50]
+name=_("Miniaturization")
+req1="Machine Tools"
+req2="Electronics"
+graphic="a.miniaturization"
+
+[advance_51]
+name=_("Mobile Warfare")
+req1="Automobile"
+req2="Tactics"
+graphic="a.mobile_warfare"
+
+[advance_52]
+name=_("Monarchy")
+req1="Ceremonial Burial"
+req2="Code of Laws"
+graphic="a.monarchy"
+
+[advance_53]
+name=_("Monotheism")
+req1="Philosophy"
+req2="Polytheism"
+graphic="a.monotheism"
+
+[advance_54]
+name=_("Mysticism")
+req1="Ceremonial Burial"
+req2="None"
+graphic="a.mysticism"
+helptext="Improves the effect of Temples."
+
+[advance_55]
+name=_("Navigation")
+req1="Seafaring"
+req2="Astronomy"
+graphic="a.navigation"
+
+[advance_56]
+name=_("Nuclear Fission")
+req1="Mass Production"
+req2="Atomic Theory"
+graphic="a.nuclear_fission"
+
+[advance_57]
+name=_("Nuclear Power")
+req1="Nuclear Fission"
+req2="Electronics"
+graphic="a.nuclear_power"
+helptext="Gives sea units one extra move."
+
+[advance_58]
+name=_("Philosophy")
+req1="Mysticism"
+req2="Literacy"
+graphic="a.philosophy"
+bonus_message="Great philosophers from all the world join your civilization: you learn %s immediately."
+flags="Bonus_Tech"
+
+[advance_59]
+name=_("Physics")
+req1="Literacy"
+req2="Navigation"
+graphic="a.physics"
+
+[advance_60]
+name=_("Plastics")
+req1="Refining"
+req2="Space Flight"
+graphic="a.plastics"
+helptext="Increases the population's contribution to pollution."
+
+[advance_61]
+name=_("Polytheism")
+req1="Horseback Riding"
+req2="Ceremonial Burial"
+graphic="a.polytheism"
+
+[advance_62]
+name=_("Pottery")
+req1="None"
+req2="None"
+graphic="a.pottery"
+
+[advance_63]
+name=_("Radio")
+req1="Flight"
+req2="Electricity"
+graphic="a.radio"
+helptext="Allows Workers and Engineers to build airbases and buoys."
+
+[advance_64]
+name=_("?tech:Railroad")
+req1="Steam Engine"
+req2="Bridge Building"
+graphic="a.railroad"
+helptext="Allows Settlers, Workers and Engineers to upgrade roads to railroads.","Decreases one-time revenue from new trade routes."
+
+[advance_65]
+name=_("Recycling")
+req1="Mass Production"
+req2="Democracy"
+graphic="a.recycling"
+
+[advance_66]
+name=_("Refining")
+req1="Chemistry"
+req2="The Corporation"
+graphic="a.refining"
+helptext="Allows Settlers, Workers and Engineers to build oil wells on Glacier tiles."
+
+[advance_67]
+name=_("Refrigeration")
+req1="Sanitation"
+req2="Electricity"
+graphic="a.refrigeration"
+helptext="Allows Settlers, Workers and Engineers to upgrade irrigation systems to farmland."
+
+[advance_68]
+name=_("Robotics")
+req1="Mobile Warfare"
+req2="Computers"
+graphic="a.robotics"
+
+[advance_69]
+name=_("Rocketry")
+req1="Advanced Flight"
+req2="Electronics"
+graphic="a.rocketry"
+
+[advance_70]
+name=_("Sanitation")
+req1="Engineering"
+req2="Medicine"
+graphic="a.sanitation"
+
+[advance_71]
+name=_("Seafaring")
+req1="Pottery"
+req2="Map Making"
+graphic="a.seafaring"
+
+[advance_72]
+name=_("Space Flight")
+req1="Computers"
+req2="Rocketry"
+graphic="a.space_flight"
+
+[advance_73]
+name=_("Stealth")
+req1="Superconductors"
+req2="Advanced Flight"
+graphic="a.stealth"
+
+[advance_74]
+name=_("Steam Engine")
+req1="Physics"
+req2="Invention"
+graphic="a.steam_engine"
+
+[advance_75]
+name=_("Steel")
+req1="Electricity"
+req2="Industrialization"
+graphic="a.steel"
+
+[advance_76]
+name=_("Superconductors")
+req1="Nuclear Power"
+req2="Laser"
+graphic="a.superconductors"
+
+[advance_77]
+name=_("Tactics")
+req1="Conscription"
+req2="Leadership"
+graphic="a.tactics"
+
+[advance_78]
+name=_("The Corporation")
+req1="Economics"
+req2="Industrialization"
+graphic="a.the_corporation"
+helptext="Allows establishing one more trade route from each city."
+
+[advance_79]
+name=_("The Republic")
+req1="Code of Laws"
+req2="Literacy"
+graphic="a.the_republic"
+
+[advance_80]
+name=_("The Wheel")
+req1="Horseback Riding"
+req2="None"
+graphic="a.the_wheel"
+
+[advance_81]
+name=_("Theology")
+req1="Feudalism"
+req2="Monotheism"
+graphic="a.theology"
+helptext="Improves the effect of Cathedrals."
+
+[advance_82]
+name=_("Theory of Gravity")
+req1="Astronomy"
+req2="University"
+graphic="a.theory_of_gravity"
+
+[advance_83]
+name=_("Trade")
+req1="Currency"
+req2="Code of Laws"
+graphic="a.trade"
+
+[advance_84]
+name=_("University")
+req1="Mathematics"
+req2="Philosophy"
+graphic="a.university"
+
+[advance_85]
+name=_("Warrior Code")
+req1="None"
+req2="None"
+graphic="a.warrior_code"
+
+[advance_86]
+name=_("Writing")
+req1="Alphabet"
+req2="None"
+graphic="a.writing"

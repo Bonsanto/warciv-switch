@@ -145,6 +145,8 @@ freeciv_client_src = $(AUDIO_SDL_FILES) \
 	themes_common.h	\
 	tilespec.c	\
 	tilespec.h	\
+	tradeplanning.c	\
+	tradeplanning.h	\
 	unitselect_common.c	\
 	unitselect_common.h	\
 	update_queue.c	\

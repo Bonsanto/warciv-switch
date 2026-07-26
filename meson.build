@@ -2363,6 +2363,7 @@ client_common = static_library('fc_client_common',
   'client/text.c',
   'client/themes_common.c',
   'client/tilespec.c',
+  'client/tradeplanning.c',
   'client/unitselect_common.c',
   'client/update_queue.c',
   'client/voteinfo.c',
@@ -4637,6 +4638,7 @@ install_data(
 rulesets = [
   'civ2civ3',
   'classic',
+  'classic-warclient',
   'multiplayer',
   'alien',
   'sandbox',
@@ -4666,6 +4668,8 @@ install_data(
   'data/default.modpack',
   'data/civ2civ3.modpack',
   'data/classic.modpack',
+  'data/classic-warclient.modpack',
+  'data/classic-warclient-competitive.serv',
   'data/multiplayer.modpack',
   'data/alien.modpack',
   'data/sandbox.modpack',
@@ -4692,6 +4696,11 @@ install_data(
 install_data(
   'data/classic/README.classic',
   install_dir : join_paths(get_option('datadir'), 'freeciv/classic')
+  )
+
+install_data(
+  'data/classic-warclient/README.classic-warclient',
+  install_dir : join_paths(get_option('datadir'), 'freeciv/classic-warclient')
   )
 
 install_data(

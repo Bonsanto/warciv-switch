@@ -5577,6 +5577,8 @@ static bool sg_load_player_city(struct loaddata *loading, struct player *plr,
     if (enabled) {
       struct cm_parameter *param = fc_calloc(1, sizeof(struct cm_parameter));
 
+      cm_init_parameter(param);
+
       for (i = 0; i < O_LAST; i++) {
         param->minimal_surplus[i] = secfile_lookup_int_default(
             loading->file, 0, "%s.cma_minimal_surplus,%d", citystr, i);

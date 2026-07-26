@@ -2008,7 +2008,6 @@ void popup_action_selection(struct unit *actor_unit,
 {
   struct astring title = ASTRING_INIT, text = ASTRING_INIT;
   choice_dialog *cd;
-  qtiles caras;
   QVariant qv1, qv2;
   pfcn_void func;
   struct city *actor_homecity;
@@ -2018,20 +2017,32 @@ void popup_action_selection(struct unit *actor_unit,
   unit_act = qdef_act::action()->vs_unit_get();
   city_act = qdef_act::action()->vs_city_get();
 
-  foreach (caras, gui()->trade_gen.lines) {
-    if (caras.autocaravan == actor_unit) {
-      int i;
+  for (int i = 0; i < gui()->trade_gen.lines.size(); i++) {
+    qtiles &route = gui()->trade_gen.lines[i];
 
-      if (game_unit_by_number(actor_unit->id) != nullptr
-          && game_city_by_number(target_city->id) != nullptr) {
+    if (route.autocaravan_id == actor_unit->id && target_city != nullptr) {
+      struct city *homecity = game_city_by_number(actor_unit->homecity);
+      struct tile *destination = nullptr;
+
+      if (homecity != nullptr) {
+        destination = route.t1 == city_tile(homecity) ? route.t2 : route.t1;
+      }
+
+      if (destination == city_tile(target_city)
+          && game_unit_by_number(actor_unit->id) != nullptr
+          && game_city_by_number(target_city->id) != nullptr
+          && action_prob_possible(act_probs[ACTION_TRADE_ROUTE])) {
         request_do_action(ACTION_TRADE_ROUTE, actor_unit->id,
                           target_city->id, 0, "");
         client_unit_init_act_prob_cache(actor_unit);
         diplomat_queue_handle_primary(actor_unit->id);
-        i = gui()->trade_gen.lines.indexOf(caras);
-        gui()->trade_gen.lines.takeAt(i);
+        gui()->trade_gen.lines.removeAt(i);
 
         return;
+      }
+
+      if (destination == city_tile(target_city)) {
+        route.autocaravan_id = IDENTITY_NUMBER_ZERO;
       }
     }
   }

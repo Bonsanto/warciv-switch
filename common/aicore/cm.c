@@ -117,6 +117,7 @@ static void print_performance(struct one_perf *counts);
 /* Fitness of a solution.  */
 struct cm_fitness {
   int weighted; /* weighted sum */
+  int preferred_specialists; /* tie-breaker after weighted outputs */
   bool sufficient; /* false => doesn't meet constraints */
 };
 
@@ -590,7 +591,10 @@ static bool fitness_better(struct cm_fitness a, struct cm_fitness b)
   if (a.sufficient != b.sufficient) {
     return a.sufficient;
   }
-  return a.weighted > b.weighted;
+  if (a.weighted != b.weighted) {
+    return a.weighted > b.weighted;
+  }
+  return a.preferred_specialists > b.preferred_specialists;
 }
 
 /************************************************************************//**
@@ -603,6 +607,7 @@ static struct cm_fitness worst_fitness(void)
 
   f.sufficient = FALSE;
   f.weighted = -FC_INFINITY;
+  f.preferred_specialists = -FC_INFINITY;
   return f;
 }
 
@@ -618,6 +623,7 @@ static struct cm_fitness compute_fitness(const int surplus[],
 
   fitness.sufficient = TRUE;
   fitness.weighted = 0;
+  fitness.preferred_specialists = 0;
 
   output_type_iterate(stat_index) {
     fitness.weighted += surplus[stat_index] * parameter->factor[stat_index];
@@ -789,6 +795,7 @@ static struct cm_fitness evaluate_solution(struct cm_state *state,
     const struct partial_solution *soln)
 {
   struct city *pcity = state->pcity;
+  struct cm_fitness fitness;
   int surplus[O_LAST];
   bool disorder, happy;
 
@@ -817,7 +824,15 @@ static struct cm_fitness evaluate_solution(struct cm_state *state,
       + 1;
   }
 
-  return compute_fitness(surplus, disorder, happy, &state->parameter);
+  fitness = compute_fitness(surplus, disorder, happy, &state->parameter);
+  if (state->parameter.specialist_output != O_LAST) {
+    Specialist_type_id preferred =
+        best_specialist(state->parameter.specialist_output, pcity);
+
+    fitness.preferred_specialists = pcity->specialists[preferred];
+  }
+
+  return fitness;
 }
 
 /************************************************************************//**
@@ -1030,17 +1045,27 @@ static void tile_type_lattice_add(struct tile_type_vector *lattice,
   tile_type for each specialist type.
 ****************************************************************************/
 static void init_specialist_lattice_nodes(struct tile_type_vector *lattice,
-                                          const struct city *pcity)
+                                          const struct city *pcity,
+                                          const struct cm_parameter *parameter)
 {
   struct cm_tile_type type;
+  Specialist_type_id preferred = DEFAULT_SPECIALIST;
+  Specialist_type_id luxury = DEFAULT_SPECIALIST;
 
   tile_type_init(&type);
   type.is_specialist = TRUE;
 
+  if (parameter->specialist_output != O_LAST) {
+    preferred = best_specialist(parameter->specialist_output, pcity);
+    luxury = best_specialist(O_LUXURY, pcity);
+  }
+
   /* for each specialist type, create a tile_type that has as production
    * the bonus for the specialist (if the city is allowed to use it) */
   normal_specialist_type_iterate(i) {
-    if (city_can_use_specialist(pcity, i)) {
+    if (city_can_use_specialist(pcity, i)
+        && (parameter->specialist_output == O_LAST
+            || i == preferred || i == luxury)) {
       type.spec = i;
       output_type_iterate(output) {
         type.production[output] = get_specialist_output(pcity, i, output);
@@ -1239,7 +1264,8 @@ static void sort_lattice_by_fitness(const struct cm_state *state,
   Create the lattice.
 ****************************************************************************/
 static void init_tile_lattice(struct city *pcity,
-                              struct tile_type_vector *lattice)
+                              struct tile_type_vector *lattice,
+                              const struct cm_parameter *parameter)
 {
   struct cm_tile_type type;
   struct tile *pcenter = city_tile(pcity);
@@ -1259,7 +1285,7 @@ static void init_tile_lattice(struct city *pcity,
   } city_tile_iterate_index_end;
 
   /* Add all the specialists into the lattice.  */
-  init_specialist_lattice_nodes(lattice, pcity);
+  init_specialist_lattice_nodes(lattice, pcity, parameter);
 
   /* Set the lattice_depth fields, and clean up unreachable nodes. */
   top_sort_lattice(lattice);
@@ -1859,7 +1885,9 @@ static bool bb_next(struct cm_state *state, bool negative_ok)
 /************************************************************************//**
   Initialize the state for the branch-and-bound algorithm.
 ****************************************************************************/
-static struct cm_state *cm_state_init(struct city *pcity, bool negative_ok)
+static struct cm_state *cm_state_init(struct city *pcity,
+                                      const struct cm_parameter *parameter,
+                                      bool negative_ok)
 {
   const int SCIENCE = 0, TAX = 1, LUXURY = 2;
   const struct player *pplayer = city_owner(pcity);
@@ -1876,7 +1904,7 @@ static struct cm_state *cm_state_init(struct city *pcity, bool negative_ok)
 
   /* create the lattice */
   tile_type_vector_init(&state->lattice);
-  init_tile_lattice(pcity, &state->lattice);
+  init_tile_lattice(pcity, &state->lattice, parameter);
   numtypes = tile_type_vector_size(&state->lattice);
 
   get_tax_rates(pplayer, rates);
@@ -2125,7 +2153,7 @@ void cm_query_result(struct city *pcity,
                      const struct cm_parameter *param,
                      struct cm_result *result, bool negative_ok)
 {
-  struct cm_state *state = cm_state_init(pcity, negative_ok);
+  struct cm_state *state = cm_state_init(pcity, param, negative_ok);
   const struct civ_map *nmap = &(wld.map);
 
   /* Refresh the city. Otherwise the CM can give wrong results or just be
@@ -2166,6 +2194,9 @@ bool cm_are_parameter_equal(const struct cm_parameter *const p1,
   if (p1->max_growth != p2->max_growth) {
     return FALSE;
   }
+  if (p1->specialist_output != p2->specialist_output) {
+    return FALSE;
+  }
 
   return TRUE;
 }
@@ -2194,6 +2225,7 @@ void cm_init_parameter(struct cm_parameter *dest)
   dest->allow_disorder = FALSE;
   dest->allow_specialists = TRUE;
   dest->max_growth = FALSE;
+  dest->specialist_output = O_LAST;
 }
 
 /************************************************************************//**
@@ -2212,6 +2244,7 @@ void cm_init_emergency_parameter(struct cm_parameter *dest)
   dest->allow_disorder = TRUE;
   dest->allow_specialists = TRUE;
   dest->max_growth = FALSE;
+  dest->specialist_output = O_LAST;
 }
 
 /************************************************************************//**

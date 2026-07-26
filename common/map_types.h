@@ -115,6 +115,9 @@ struct civ_map {
       int flatpoles;
       int temperature;
       int wetness;
+      int rivers;
+      int lakes;
+      int islandshape;
       int steepness;
       bool ocean_resources;         /* Resources in the middle of the ocean */
       bool have_huts;

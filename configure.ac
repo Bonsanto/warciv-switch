@@ -1896,6 +1896,7 @@ AC_CONFIG_FILES([Makefile
           data/override/Makefile
 	  data/default/Makefile
 	  data/classic/Makefile
+	  data/classic-warclient/Makefile
 	  data/multiplayer/Makefile
 	  data/sandbox/Makefile
           data/alien/Makefile

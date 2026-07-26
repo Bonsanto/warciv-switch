@@ -870,6 +870,9 @@ bool dio_get_cm_parameter_raw(struct data_in *din,
 {
   int i;
 
+  /* The wire format predates client-only specialist preferences. */
+  cm_init_parameter(param);
+
   for (i = 0; i < O_LAST; i++) {
     if (!dio_get_sint16_raw(din, &param->minimal_surplus[i])) {
       log_packet("Got a bad cm_parameter");

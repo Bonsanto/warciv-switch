@@ -52,6 +52,7 @@
 #include "options.h"
 #include "overview_common.h"
 #include "tilespec.h"
+#include "tradeplanning.h"
 #include "update_queue.h"
 
 #include "control.h"
@@ -3604,6 +3605,10 @@ void key_unit_auto_work(void)
   unit_list_iterate(get_units_in_focus(), punit) {
     if (can_unit_do_autoworker(punit)) {
       request_unit_autoworker(punit);
+    } else if (unit_can_do_action(punit, ACTION_TRADE_ROUTE)) {
+      /* Trade caravans: send along the trade plan, rehoming first when
+       * the home city has no planned route left. */
+      trade_planning_auto_caravan(punit);
     }
   } unit_list_iterate_end;
 }

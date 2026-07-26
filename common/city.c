@@ -3035,10 +3035,11 @@ inline void set_city_production(struct city *pcity)
     bool can_trade;
 
     /* Partner city may have not yet been sent to the client, or
-     * there's just a placeholder city with a placeholder owner
-     * created for some tile->worked. */
+     * there's just a placeholder city (possibly with an owner already
+     * learned from tile information) created for some tile->worked. */
     if (!is_server()
         && (tcity == nullptr
+            || city_tile(tcity) == nullptr
             || city_owner(tcity)->slot == nullptr)) {
       continue;
     }

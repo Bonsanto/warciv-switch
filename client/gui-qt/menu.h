@@ -141,16 +141,8 @@ class trade_city
 public:
   trade_city(struct city *pcity);
 
-  bool done;
-  int over_max;
-  int poss_trade_num;
-  unsigned trade_num; // already created + generated
-  QList<struct city *> curr_tr_cities;
-  QList<struct city *> new_tr_cities;
-  QList<struct city *> pos_cities;
   struct city *city;
   struct tile *tile;
-
 };
 
 /**************************************************************************
@@ -161,11 +153,13 @@ struct qtiles
 {
   struct tile *t1;
   struct tile *t2;
-  struct unit *autocaravan;
+  int autocaravan_id;
+  int trade_value;
 
   bool operator==(const qtiles& a) const
   {
-    return (t1 == a.t1 && t2 == a.t2 && autocaravan == a.autocaravan);
+    return (t1 == a.t1 && t2 == a.t2
+            && autocaravan_id == a.autocaravan_id);
   }
 };
 
@@ -178,6 +172,7 @@ public:
   trade_generator();
 
   bool hover_city;
+  bool autocaravans_enabled;
   QList<qtiles> lines;
   QList<struct city *> virtual_cities;
   QList<trade_city*> cities;
@@ -187,20 +182,12 @@ public:
   void add_tile(struct tile *ptile);
   void calculate();
   void clear_trade_planing();
+  int dispatch_all_caravans();
   void remove_city(struct city *pcity);
   void remove_virtual_city(struct tile *ptile);
 
 private:
-  bool discard_any(trade_city *tc, int freeroutes);
-  bool discard_one(trade_city *tc);
-  int find_over_max(struct city *pcity);
-  trade_city *find_most_free();
-  void check_if_done(trade_city *tc1, trade_city *tc2);
-  void discard();
-  void discard_trade(trade_city *tc1, trade_city *tc2);
-  void find_certain_routes();
-  void find_certain_routes_inner(trade_city *tc);
-  void calculate_inner(trade_city *tc);
+  bool dispatch_caravan(struct unit *punit);
 };
 
 

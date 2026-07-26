@@ -46,6 +46,10 @@ struct cm_parameter {
 
   int factor[O_LAST];
   int happy_factor;
+
+  /* O_LAST allows every specialist. Otherwise, only the best specialist
+   * for this output and the best luxury specialist are considered. */
+  Output_type_id specialist_output;
 };
 
 /* A result which can examined. */

@@ -49,6 +49,7 @@
 #include "overview_common.h"
 #include "tilespec.h"
 #include "text.h"
+#include "tradeplanning.h"
 #include "zoom.h"
 
 /* client/gui-gtk-4.0 */
@@ -797,4 +798,6 @@ void tileset_changed(void)
   New turn callback
 **************************************************************************/
 void start_turn(void)
-{}
+{
+  trade_planning_pulse();
+}

@@ -215,7 +215,9 @@ bool can_cities_trade(const struct city *pc1, const struct city *pc2)
 {
   /* If you change the logic here, make sure to update the help in
    * helptext_unit(). */
-  return (pc1 && pc2 && pc1 != pc2
+  return (pc1 && pc2
+          && city_tile(pc1) && city_tile(pc2)
+          && pc1 != pc2
           && (city_owner(pc1) != city_owner(pc2)
               || map_distance(pc1->tile, pc2->tile)
                  >= game.info.trademindist)
@@ -352,6 +354,16 @@ int trade_base_between_cities(const struct city *pc1, const struct city *pc2)
     /* Simple revenue style */
     bonus = (pc1->citizen_base[O_TRADE] + pc2->citizen_base[O_TRADE] + 4)
             * 3;
+  } else if (game.info.trade_revenue_style == TRS_WARCLIENT) {
+    /* Historical Warclient / Freeciv 2.0 recurring trade formula.
+     *
+     * Warclient divided the sum by eight before applying the ownership
+     * and continent multipliers. The modern trade route pipeline applies
+     * those multipliers below as percentages and then divides by twelve,
+     * so scale the already-rounded historical base by twelve here.
+     */
+    bonus = ((pc1->citizen_base[O_TRADE]
+              + pc2->citizen_base[O_TRADE] + 4) / 8) * 12;
   }
 
   bonus = bonus
@@ -718,6 +730,12 @@ bool city_receives_goods(const struct city *pcity,
       struct city *tcity = game_city_by_number(proute->partner);
       enum trade_route_type type;
       struct trade_route_settings *settings;
+
+      /* A client can know that a route exists before it has received the
+       * partner city's location. */
+      if (tcity == nullptr || city_tile(tcity) == nullptr) {
+        continue;
+      }
 
       if (can_cities_trade(pcity, tcity)) {
         return TRUE;

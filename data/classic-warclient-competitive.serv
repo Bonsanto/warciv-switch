@@ -1,0 +1,43 @@
+/ruleset classic-warclient
+/set topology ISO
+/set generator FAIR
+/set islandshape 70
+/set startpos VARIABLE
+/set tinyisles enabled
+/set mapsize PLAYER
+/set tilesperplayer 200
+/set separatepoles enabled
+/set flatpoles 0
+/set temperature 50
+/set landmass 17
+/set steepness 30
+/set wetness 35
+/set rivers 20
+/set lakes 100
+/set specials 443
+/set huts 0
+
+/set minplayers 1
+/set maxplayers 4
+/set aifill 4
+/set startunits cccwwwxxxx
+/set dispersion 0
+/set citymindist 2
+/set revolentype FIXED
+/set revolen 2
+
+/set foodbox 10
+/set sciencebox 90
+/set aqueductloss 0
+/set notradesize 0
+/set fulltradesize 1
+
+/set barbarians DISABLED
+/set fogofwar enabled
+/set savepalace enabled
+
+/set demography NASRLPEMOCqrb
+/set trading_city enabled
+/set trademindist 8
+/set trade_revenue_style WARCLIENT
+/set caravan_bonus_style LOGARITHMIC

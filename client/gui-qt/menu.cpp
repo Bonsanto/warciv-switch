@@ -15,6 +15,10 @@
 #include <fc_config.h>
 #endif
 
+#include <algorithm>
+#include <random>
+#include <vector>
+
 // Qt
 #include <QActionGroup>
 #include <QApplication>
@@ -70,9 +74,7 @@ static void enable_interface(bool enable);
 trade_city::trade_city(struct city *pcity)
 {
   city = pcity;
-  tile = nullptr;
-  trade_num = 0;
-  poss_trade_num = 0;
+  tile = city_tile(pcity);
 }
 
 /**********************************************************************//**
@@ -81,6 +83,7 @@ trade_city::trade_city(struct city *pcity)
 trade_generator::trade_generator()
 {
   hover_city = false;
+  autocaravans_enabled = false;
 }
 
 /**********************************************************************//**
@@ -93,6 +96,9 @@ void trade_generator::add_all_cities()
   struct player *pplayer = client_player();
 
   clear_trade_planing();
+  if (pplayer == nullptr) {
+    return;
+  }
   s = city_list_size(pplayer->cities);
   if (s == 0) {
     return;
@@ -128,6 +134,12 @@ void trade_generator::clear_trade_planing()
 **************************************************************************/
 void trade_generator::add_city(struct city *pcity)
 {
+  foreach (trade_city *existing, cities) {
+    if (existing->city == pcity || existing->tile == city_tile(pcity)) {
+      return;
+    }
+  }
+
   trade_city *tc = new trade_city(pcity);
 
   cities.append(tc);
@@ -143,6 +155,10 @@ void trade_generator::add_tile(struct tile *ptile)
   struct city *pcity;
   trade_city *tc;
 
+  if (ptile == nullptr) {
+    return;
+  }
+
   pcity = tile_city(ptile);
 
   foreach (tc, cities) {
@@ -152,7 +168,7 @@ void trade_generator::add_tile(struct tile *ptile)
         return;
       }
     }
-    if (tc->city->tile == ptile) {
+    if (tc->tile == ptile) {
       remove_virtual_city(ptile);
       return;
     }
@@ -160,6 +176,10 @@ void trade_generator::add_tile(struct tile *ptile)
 
   if (pcity != nullptr) {
     add_city(pcity);
+    return;
+  }
+
+  if (client_player() == nullptr) {
     return;
   }
 
@@ -176,11 +196,12 @@ void trade_generator::remove_city(struct city* pcity)
   trade_city *tc;
 
   foreach (tc, cities) {
-    if (tc->city->tile == pcity->tile) {
+    if (tc->tile == city_tile(pcity)) {
       cities.removeAll(tc);
       gui()->infotab->chtwdg->append(
         QString(_("Removing city %1 from trade planning"))
-        .arg(tc->city->name));
+        .arg(pcity->name));
+      delete tc;
       return;
     }
   }
@@ -192,296 +213,264 @@ void trade_generator::remove_city(struct city* pcity)
 void trade_generator::remove_virtual_city(tile *ptile)
 {
   struct city *c;
+  struct city *virtual_city = nullptr;
   trade_city *tc;
 
   foreach (c, virtual_cities) {
     if (c->tile == ptile) {
-        virtual_cities.removeAll(c);
-        gui()->infotab->chtwdg->append(
-          QString(_("Removing city %1 from trade planning")).arg(c->name));
-    }
-  }
-
-  foreach (tc, cities) {
-    if (tc->city->tile == ptile) {
-        cities.removeAll(tc);
-        return;
-    }
-  }
-}
-
-/**********************************************************************//**
-  Inner foreach() loop of trade_generator::calculate()
-  Implemented as separate function to avoid shadow warnings about
-  internal variables of foreach() inside foreach()
-**************************************************************************/
-void trade_generator::calculate_inner(trade_city *tc)
-{
-  trade_city *ttc;
-
-  foreach (ttc, cities) {
-    if (!have_cities_trade_route(tc->city, ttc->city)
-        && can_establish_trade_route(tc->city, ttc->city, GOODS_HIGH_PRIORITY)) {
-      tc->poss_trade_num++;
-      tc->pos_cities.append(ttc->city);
-    }
-    tc->over_max = tc->trade_num + tc->poss_trade_num
-      - max_trade_routes(tc->city);
-  }
-}
-
-/**********************************************************************//**
-  Finds trade routes to establish
-**************************************************************************/
-void trade_generator::calculate()
-{
-  trade_city *tc;
-  int i;
-  bool tdone;
-  int count = cities.size();
-  int *cities_ids = (int *)fc_malloc(sizeof(int) * count);
-  trade_city **cities_order = (trade_city **)fc_malloc(sizeof(trade_city *) * count);
-
-  for (i = 0; i < 100; i++) {
-    int n;
-
-    tdone = true;
-
-    for (n = 0; n < count; n++) {
-      cities_ids[n] = n;
-      cities_order[n] = cities[n];
-    }
-    array_shuffle(cities_ids, count);
-
-    cities.clear();
-    for (n = 0; n < count; n++) {
-      cities.append(cities_order[cities_ids[n]]);
-    }
-
-    lines.clear();
-    foreach (tc, cities) {
-      tc->pos_cities.clear();
-      tc->new_tr_cities.clear();
-      tc->curr_tr_cities.clear();
-    }
-    foreach (tc, cities) {
-      tc->trade_num = city_num_trade_routes(tc->city);
-      tc->poss_trade_num = 0;
-      tc->pos_cities.clear();
-      tc->new_tr_cities.clear();
-      tc->curr_tr_cities.clear();
-      tc->done = false;
-      calculate_inner(tc);
-    }
-
-    find_certain_routes();
-    discard();
-    find_certain_routes();
-
-    foreach (tc, cities) {
-      if (!tc->done) {
-        tdone = false;
-      }
-    }
-    if (tdone) {
+      virtual_city = c;
+      gui()->infotab->chtwdg->append(
+        QString(_("Removing city %1 from trade planning")).arg(c->name));
       break;
     }
   }
+
   foreach (tc, cities) {
-    if (!tc->done) {
-      char text[1024];
-      fc_snprintf(text, sizeof(text),
-                  PL_("City %s - 1 free trade route.",
-                      "City %s - %d free trade routes.",
-                      max_trade_routes(tc->city) - tc->trade_num),
-                  city_link(tc->city),
-                  max_trade_routes(tc->city) - tc->trade_num);
-      output_window_append(ftc_client, text);
+    if (tc->tile == ptile) {
+      cities.removeAll(tc);
+      delete tc;
+      break;
     }
   }
 
-  free(cities_ids);
-  free(cities_order);
+  if (virtual_city != nullptr) {
+    virtual_cities.removeAll(virtual_city);
+    destroy_city_virtual(virtual_city);
+  }
+}
 
+/**********************************************************************//**
+  Find a high-value set of routes for the selected cities.
+
+  Every planned edge consumes one free route slot at both ends. Repeated
+  randomized greedy passes maximize the ruleset-aware recurring trade
+  value, using route count as a tie breaker. This avoids the old
+  order-dependent planner, which could discard a valuable route simply
+  because its city happened to appear late in the list.
+**************************************************************************/
+void trade_generator::calculate()
+{
+  struct candidate {
+    int first;
+    int second;
+    int value;
+  };
+  std::vector<candidate> candidates;
+  std::vector<int> capacity(cities.size(), 0);
+  std::vector<int> best;
+  std::vector<int> order;
+  int best_value = -1;
+  int trials;
+  unsigned seed = 0x9e3779b9U;
+
+  lines.clear();
+
+  /* A real city may have disappeared or changed owner since it was
+   * selected. Refresh pointers by tile and drop locations with no city. */
+  for (int i = cities.size() - 1; i >= 0; i--) {
+    trade_city *tc = cities.at(i);
+
+    if (!virtual_cities.contains(tc->city)) {
+      struct city *current = tile_city(tc->tile);
+
+      if (current == nullptr) {
+        cities.removeAt(i);
+        delete tc;
+      } else {
+        tc->city = current;
+      }
+    }
+  }
+
+  capacity.resize(cities.size());
+  for (int i = 0; i < cities.size(); i++) {
+    struct city *pcity = cities.at(i)->city;
+
+    capacity[i] = MAX(0, static_cast<int>(max_trade_routes(pcity))
+                         - city_num_trade_routes(pcity));
+    seed ^= static_cast<unsigned>(tile_index(city_tile(pcity)))
+            + 0x9e3779b9U + (seed << 6) + (seed >> 2);
+  }
+
+  for (int first = 0; first < cities.size(); first++) {
+    if (capacity[first] == 0) {
+      continue;
+    }
+    for (int second = first + 1; second < cities.size(); second++) {
+      struct city *city1 = cities.at(first)->city;
+      struct city *city2 = cities.at(second)->city;
+
+      if (capacity[second] == 0
+          || have_cities_trade_route(city1, city2)
+          || !can_establish_trade_route(city1, city2,
+                                        GOODS_HIGH_PRIORITY)) {
+        continue;
+      }
+      candidates.push_back({first, second,
+                            trade_base_between_cities(city1, city2)});
+    }
+  }
+
+  order.resize(candidates.size());
+  for (int i = 0; i < static_cast<int>(order.size()); i++) {
+    order[i] = i;
+  }
+
+  trials = MIN(512, MAX(64, static_cast<int>(candidates.size()) * 2));
+  std::mt19937 random(seed);
+  for (int trial = 0; trial < trials; trial++) {
+    std::vector<int> used(cities.size(), 0);
+    std::vector<int> selected;
+    int value = 0;
+
+    if (trial == 0) {
+      std::stable_sort(order.begin(), order.end(),
+                       [&candidates](int left, int right) {
+        return candidates[left].value > candidates[right].value;
+      });
+    } else {
+      std::shuffle(order.begin(), order.end(), random);
+    }
+
+    for (int index : order) {
+      const candidate &route = candidates[index];
+
+      if (used[route.first] >= capacity[route.first]
+          || used[route.second] >= capacity[route.second]) {
+        continue;
+      }
+      used[route.first]++;
+      used[route.second]++;
+      selected.push_back(index);
+      value += route.value;
+    }
+
+    if (value > best_value
+        || (value == best_value && selected.size() > best.size())) {
+      best = selected;
+      best_value = value;
+    }
+  }
+
+  std::stable_sort(best.begin(), best.end(),
+                   [&candidates](int left, int right) {
+    return candidates[left].value > candidates[right].value;
+  });
+
+  for (int index : best) {
+    const candidate &route = candidates[index];
+    qtiles line;
+
+    line.t1 = city_tile(cities.at(route.first)->city);
+    line.t2 = city_tile(cities.at(route.second)->city);
+    line.autocaravan_id = IDENTITY_NUMBER_ZERO;
+    line.trade_value = route.value;
+    lines.append(line);
+  }
+
+  gui()->infotab->chtwdg->append(
+    QString(PL_("Planned %1 trade route with a recurring value of %2.",
+                "Planned %1 trade routes with a recurring value of %2.",
+                lines.size())).arg(lines.size()).arg(MAX(0, best_value)));
+
+  if (autocaravans_enabled) {
+    dispatch_all_caravans();
+  }
   gui()->mapview_wdg->repaint();
 }
 
 /**********************************************************************//**
-  Finds highest number of trade routes over maximum for all cities,
-  skips given city
+  Send one idle trade unit along the first unassigned planned route from
+  its home city.
 **************************************************************************/
-int trade_generator::find_over_max(struct city *pcity = nullptr)
+bool trade_generator::dispatch_caravan(struct unit *punit)
 {
-  trade_city *tc;
-  int max = 0;
+  struct city *homecity;
 
-  foreach (tc, cities) {
-    if (pcity != tc->city) {
-      max = qMax(max, tc->over_max);
-    }
-  }
-  return max;
-}
-
-/**********************************************************************//**
-  Finds city with highest trade routes possible
-**************************************************************************/
-trade_city* trade_generator::find_most_free()
-{
-  trade_city *tc;
-  trade_city *rc = nullptr;
-  int max = 0;
-
-  foreach (tc, cities) {
-    if (max < tc->over_max) {
-      max = tc->over_max;
-      rc = tc;
-    }
-  }
-  return rc;
-}
-
-/**********************************************************************//**
-  Drops all possible trade routes.
-**************************************************************************/
-void trade_generator::discard()
-{
-  trade_city *tc;
-  int j = 5;
-
-  for (int i = j; i > -j; i--) {
-    while ((tc = find_most_free())) {
-      if (!discard_one(tc)) {
-        if (!discard_any(tc, i)) {
-          break;
-        }
-      }
-    }
-  }
-}
-
-/**********************************************************************//**
-  Drops trade routes between given cities
-**************************************************************************/
-void trade_generator::discard_trade(trade_city* tc, trade_city* ttc)
-{
-  tc->pos_cities.removeOne(ttc->city);
-  ttc->pos_cities.removeOne(tc->city);
-  tc->poss_trade_num--;
-  ttc->poss_trade_num--;
-  tc->over_max--;
-  ttc->over_max--;
-  check_if_done(tc, ttc);
-}
-
-/**********************************************************************//**
-  Drops one trade route for given city if possible
-**************************************************************************/
-bool trade_generator::discard_one(trade_city *tc)
-{
-  int best = 0;
-  int current_candidate = 0;
-  int best_id;
-  trade_city *ttc;
-
-  for (int i = cities.size() - 1 ; i >= 0; i--) {
-    ttc = cities.at(i);
-    current_candidate = ttc->over_max;
-    if (current_candidate > best) {
-      best_id = i;
-    }
-  }
-  if (best == 0) {
+  if (punit == nullptr
+      || unit_owner(punit) != client_player()
+      || unit_has_orders(punit)
+      || punit->activity != ACTIVITY_IDLE
+      || !unit_can_do_action(punit, ACTION_TRADE_ROUTE)) {
     return false;
   }
 
-  ttc = cities.at(best_id);
-  discard_trade(tc, ttc);
-  return true;
-}
+  homecity = game_city_by_number(punit->homecity);
+  if (homecity == nullptr) {
+    return false;
+  }
 
-/**********************************************************************//**
-  Drops all trade routes for given city
-**************************************************************************/
-bool trade_generator::discard_any(trade_city* tc, int freeroutes)
-{
-  trade_city *ttc;
+  foreach (const qtiles &route, lines) {
+    if (route.autocaravan_id == punit->id) {
+      return false;
+    }
+  }
 
-  for (int i = cities.size() - 1 ; i >= 0; i--) {
-    ttc = cities.at(i);
-    if (tc->pos_cities.contains(ttc->city)
-        && ttc->pos_cities.contains(tc->city)
-        && ttc->over_max > freeroutes) {
-      discard_trade(tc, ttc);
+  for (int i = 0; i < lines.size(); i++) {
+    qtiles &route = lines[i];
+    struct tile *destination;
+
+    if (route.autocaravan_id != IDENTITY_NUMBER_ZERO
+        || (route.t1 != city_tile(homecity)
+            && route.t2 != city_tile(homecity))) {
+      continue;
+    }
+
+    destination = route.t1 == city_tile(homecity) ? route.t2 : route.t1;
+    if (tile_city(destination) == nullptr) {
+      continue;
+    }
+
+    if (send_goto_tile(punit, destination)) {
+      route.autocaravan_id = punit->id;
       return true;
     }
   }
+
   return false;
 }
 
 /**********************************************************************//**
-  Inner foreach() loop of trade_generator::find_certain_routes()
-  Implemented as separate function to avoid shadow warnings about
-  internal variables of foreach() inside foreach()
+  Dispatch every eligible idle caravan and release assignments belonging
+  to units which no longer exist.
 **************************************************************************/
-void trade_generator::find_certain_routes_inner(trade_city *tc)
+int trade_generator::dispatch_all_caravans()
 {
-  trade_city *ttc;
+  struct player *pplayer = client_player();
+  int dispatched = 0;
 
-  foreach (ttc, cities) {
-    if (ttc->done || ttc->over_max > 0
-        || tc == ttc || tc->done || tc->over_max > 0) {
-      continue;
-    }
-    if (tc->pos_cities.contains(ttc->city)
-        && ttc->pos_cities.contains(tc->city)) {
-      struct qtiles gilles;
+  if (pplayer == nullptr || !can_client_issue_orders()) {
+    return 0;
+  }
 
-      tc->pos_cities.removeOne(ttc->city);
-      ttc->pos_cities.removeOne(tc->city);
-      tc->poss_trade_num--;
-      ttc->poss_trade_num--;
-      tc->new_tr_cities.append(ttc->city);
-      ttc->new_tr_cities.append(ttc->city);
-      tc->trade_num++;
-      ttc->trade_num++;
-      tc->over_max--;
-      ttc->over_max--;
-      check_if_done(tc, ttc);
-      gilles.t1 = tc->city->tile;
-      gilles.t2 = ttc->city->tile;
-      gilles.autocaravan = nullptr;
-      lines.append(gilles);
+  for (int i = lines.size() - 1; i >= 0; i--) {
+    qtiles &route = lines[i];
+    struct city *city1 = tile_city(route.t1);
+    struct city *city2 = tile_city(route.t2);
+
+    if (city1 != nullptr && city2 != nullptr
+        && have_cities_trade_route(city1, city2)) {
+      lines.removeAt(i);
+    } else if (route.autocaravan_id != IDENTITY_NUMBER_ZERO) {
+      struct unit *assigned =
+        game_unit_by_number(route.autocaravan_id);
+
+      if (assigned == nullptr || !unit_has_orders(assigned)) {
+        /* Retry stopped or obstructed caravans. Units which arrived
+         * successfully have already consumed and removed their route. */
+        route.autocaravan_id = IDENTITY_NUMBER_ZERO;
+      }
     }
   }
-}
 
-/**********************************************************************//**
-  Adds routes for cities which can only have maximum possible trade routes
-**************************************************************************/
-void trade_generator::find_certain_routes()
-{
-  trade_city *tc;
-
-  foreach (tc, cities) {
-    if (tc->done || tc->over_max > 0) {
-      continue;
+  unit_list_iterate(pplayer->units, punit) {
+    if (dispatch_caravan(punit)) {
+      dispatched++;
     }
-    find_certain_routes_inner(tc);
-  }
-}
+  } unit_list_iterate_end;
 
-/**********************************************************************//**
-  Marks cities with full trade routes to finish searching
-**************************************************************************/
-void trade_generator::check_if_done(trade_city* tc1, trade_city* tc2)
-{
-  if (tc1->trade_num == max_trade_routes(tc1->city)) {
-    tc1->done = true;
-  }
-  if (tc2->trade_num == max_trade_routes(tc2->city)) {
-    tc2->done = true;
-  }
+  gui()->mapview_wdg->repaint();
+  return dispatched;
 }
 
 /**********************************************************************//**
@@ -1413,11 +1402,13 @@ void mr_menu::setup_menus()
   act = multiplayer_menu->addAction(_("Calculate trade planning"));
   connect(act, &QAction::triggered, this, &mr_menu::slot_calculate);
   act = multiplayer_menu->addAction(_("Add/Remove City"));
-  act->setShortcut(QKeySequence(tr("ctrl+t")));
+  act->setShortcut(QKeySequence(tr("ctrl+shift+t")));
   connect(act, &QAction::triggered, this, &mr_menu::slot_trade_city);
   act = multiplayer_menu->addAction(_("Clear Trade Planning"));
   connect(act, &QAction::triggered, this, &mr_menu::slot_clear_trade);
-  act = multiplayer_menu->addAction(_("Automatic caravan"));
+  act = multiplayer_menu->addAction(_("Automatic caravans"));
+  act->setCheckable(true);
+  act->setChecked(gui()->trade_gen.autocaravans_enabled);
   menu_list.insert(AUTOTRADEROUTE, act);
   connect(act, &QAction::triggered, this, &mr_menu::slot_autocaravan);
   act->setShortcut(QKeySequence(tr("ctrl+j")));
@@ -2180,6 +2171,9 @@ void mr_menu::menus_sensitive()
       case AUDIO:
         i.value()->setEnabled(!audio_is_dummy_plugin());
         break;
+      case AUTOTRADEROUTE:
+        i.value()->setEnabled(can_client_issue_orders());
+        break;
       default:
         break;
       }
@@ -2492,7 +2486,8 @@ void mr_menu::menus_sensitive()
         break;
 
       case AUTOWORKER:
-        if (can_units_do(punits, can_unit_do_autoworker)) {
+        if (can_units_do(punits, can_unit_do_autoworker)
+            || units_can_do_action(punits, ACTION_TRADE_ROUTE, true)) {
           i.value()->setEnabled(true);
         }
         if (units_contain_cityfounder(punits)) {
@@ -2575,12 +2570,6 @@ void mr_menu::menus_sensitive()
           QString(action_id_name_translation(ACTION_HELP_WONDER))
           .replace("&", "&&"));
         if (can_units_do_on_map(&(wld.map), punits, unit_can_help_build_wonder_here)) {
-          i.value()->setEnabled(true);
-        }
-        break;
-
-      case AUTOTRADEROUTE:
-        if (units_can_do_action(punits, ACTION_TRADE_ROUTE, TRUE)) {
           i.value()->setEnabled(true);
         }
         break;
@@ -2971,44 +2960,28 @@ void mr_menu::slot_clear_trade()
 }
 
 /**********************************************************************//**
-  Sends automatic caravan
+  Enable or disable automatic dispatch for idle caravans. Enabling it also
+  processes caravans which are already waiting in their home cities.
 **************************************************************************/
 void mr_menu::slot_autocaravan()
 {
-  qtiles gilles;
-  struct unit *punit;
-  struct city *homecity;
-  struct tile *home_tile;
-  struct tile *dest_tile;
-  bool sent = false;
+  QAction *action = qobject_cast<QAction *>(sender());
 
-  punit = head_of_units_in_focus();
-  homecity = game_city_by_number(punit->homecity);
-  home_tile = homecity->tile;
-  foreach(gilles, gui()->trade_gen.lines) {
-    if ((gilles.t1 == home_tile || gilles.t2 == home_tile)
-         && gilles.autocaravan == nullptr) {
-      // Send caravan
-      if (gilles.t1 == home_tile) {
-        dest_tile = gilles.t2;
-      } else {
-        dest_tile = gilles.t1;
-      }
-      if (send_goto_tile(punit, dest_tile)) {
-        int i;
-        i = gui()->trade_gen.lines.indexOf(gilles);
-        gilles = gui()->trade_gen.lines.takeAt(i);
-        gilles.autocaravan = punit;
-        gui()->trade_gen.lines.append(gilles);
-        sent = true;
-        break;
-      }
-    }
+  if (action == nullptr) {
+    return;
   }
 
-  if (!sent) {
-    gui()->infotab->chtwdg->append(_("Didn't find any trade route"
-                                     " to establish"));
+  gui()->trade_gen.autocaravans_enabled = action->isChecked();
+  if (gui()->trade_gen.autocaravans_enabled) {
+    int dispatched = gui()->trade_gen.dispatch_all_caravans();
+
+    gui()->infotab->chtwdg->append(
+      QString(PL_("Automatic caravan movement enabled; %1 unit dispatched.",
+                  "Automatic caravan movement enabled; %1 units dispatched.",
+                  dispatched)).arg(dispatched));
+  } else {
+    gui()->infotab->chtwdg->append(
+      _("Automatic caravan movement disabled."));
   }
 }
 

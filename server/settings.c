@@ -292,6 +292,7 @@ static const struct sset_val_name *traderevenuestyle_name(int revenue_style)
   /* TRANS: Description of trade revenue style setting value. */
   NAME_CASE(TRS_CLASSIC, "CLASSIC", N_("Classic Freeciv"));
   NAME_CASE(TRS_SIMPLE, "SIMPLE", N_("Proportional to tile trade"));
+  NAME_CASE(TRS_WARCLIENT, "WARCLIENT", N_("Warclient tile trade"));
   }
 
   return nullptr;
@@ -1831,8 +1832,40 @@ static struct setting settings[] = {
           N_("Amount of water on landmasses"),
           N_("Small values mean lots of dry, desert-like land; "
              "higher values give a wetter map with more swamps, "
-             "jungles, and rivers."), nullptr, nullptr, nullptr,
+             "jungles, and forests. River and lake density are controlled "
+             "separately by the 'rivers' and 'lakes' settings."),
+          nullptr, nullptr, nullptr,
           MAP_MIN_WETNESS, MAP_MAX_WETNESS, MAP_DEFAULT_WETNESS)
+
+  GEN_INT("rivers", wld.map.server.rivers,
+          SSET_MAP_GEN, SSET_GEOLOGY, SSET_SITUATIONAL,
+          ALLOW_NONE, ALLOW_BASIC,
+          N_("Amount of rivers"),
+          N_("Controls river density independently of the 'wetness' "
+             "setting. Rivers still follow terrain and flow toward lower, "
+             "connected areas where possible."), nullptr, nullptr, nullptr,
+          MAP_MIN_RIVERS, MAP_MAX_RIVERS, MAP_DEFAULT_RIVERS)
+
+  GEN_INT("lakes", wld.map.server.lakes,
+          SSET_MAP_GEN, SSET_GEOLOGY, SSET_SITUATIONAL,
+          ALLOW_NONE, ALLOW_BASIC,
+          N_("Amount of inland lakes"),
+          N_("Controls how much generated land is converted into enclosed "
+             "lake basins. The ruleset's maximum lake size still limits "
+             "individual lakes. A value of zero adds no extra basins."),
+          nullptr, nullptr, nullptr,
+          MAP_MIN_LAKES, MAP_MAX_LAKES, MAP_DEFAULT_LAKES)
+
+  GEN_INT("islandshape", wld.map.server.islandshape,
+          SSET_MAP_GEN, SSET_GEOLOGY, SSET_SITUATIONAL,
+          ALLOW_NONE, ALLOW_BASIC,
+          N_("Island coastline irregularity"),
+          N_("With island-based generators, higher values grow islands "
+             "as irregular, amoeba-like shapes with lobes, fjords and "
+             "inlets instead of compact blobs. Zero keeps the classic "
+             "rounded islands."), nullptr, nullptr, nullptr,
+          MAP_MIN_ISLANDSHAPE, MAP_MAX_ISLANDSHAPE,
+          MAP_DEFAULT_ISLANDSHAPE)
 
   GEN_BOOL("globalwarming", game.info.global_warming,
            SSET_RULES, SSET_GEOLOGY, SSET_VITAL, ALLOW_NONE, ALLOW_BASIC,
@@ -2380,7 +2413,10 @@ static struct setting settings[] = {
              "plus the distance between them, with multipliers for overseas "
              "and international routes. "
              "SIMPLE revenues are proportional to the average trade of the "
-             "two cities."),
+             "two cities. "
+             "WARCLIENT revenues use the historical Warclient formula based "
+             "on the trade worked by both cities; route-type percentages "
+             "supply the national and intercontinental multipliers."),
            nullptr, nullptr, nullptr, traderevenuestyle_name,
            GAME_DEFAULT_TRADE_REVENUE_STYLE)
 

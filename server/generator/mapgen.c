@@ -109,6 +109,7 @@ static bool make_island(int islemass, int starters,
                         int min_specific_island_size);
 
 #define RIVERS_MAXTRIES 32767
+#define MAX_INLAND_LAKE_SIZE 8
 /* This struct includes two dynamic bitvectors. They are needed to mark
    tiles as blocked to prevent a river from falling into itself, and for
    storing rivers temporarily. */
@@ -150,6 +151,7 @@ static bool make_river(struct river_map *privermap,
                        struct tile *ptile,
                        struct extra_type *priver);
 static void make_rivers(void);
+static void make_inland_lakes(void);
 
 static void river_types_init(void);
 
@@ -1046,6 +1048,141 @@ static void make_rivers(void)
 }
 
 /**********************************************************************//**
+  Return whether a land tile can be part of a newly carved inland basin.
+  Candidates must be separated from every existing ocean so that the
+  resulting water body can later be classified as a lake.
+**************************************************************************/
+static bool inland_lake_candidate(const struct tile *ptile)
+{
+  const struct terrain *pterrain = tile_terrain(ptile);
+
+  if (is_ocean(pterrain)
+      || terrain_has_flag(pterrain, TER_FROZEN)
+      || tile_resource(ptile) != nullptr
+      || near_singularity(ptile)) {
+    return FALSE;
+  }
+
+  adjc_iterate(&(wld.map), ptile, adjacent) {
+    if (is_ocean_tile(adjacent)) {
+      return FALSE;
+    }
+  } adjc_iterate_end;
+
+  return TRUE;
+}
+
+/**********************************************************************//**
+  Carve additional, topology-safe inland lake basins.
+
+  The 'lakes' setting is measured in tenths of a percent of generated land:
+  100 converts up to 10 percent of otherwise suitable land. Basins are
+  kept apart and never exceed either the ruleset limit or our small-basin
+  generation limit.
+**************************************************************************/
+static void make_inland_lakes(void)
+{
+  bool *candidates;
+  struct terrain *lake_ocean;
+  int land_tiles = 0;
+  int target;
+  int made = 0;
+  int attempts = 0;
+  int max_attempts;
+  int max_lake_size;
+
+  if (wld.map.server.lakes <= 0 || terrain_control.lake_max_size <= 0) {
+    return;
+  }
+
+  lake_ocean = most_shallow_ocean(FALSE);
+  if (lake_ocean == nullptr) {
+    return;
+  }
+
+  candidates = fc_calloc(MAP_INDEX_SIZE, sizeof(*candidates));
+  whole_map_iterate(&(wld.map), ptile) {
+    if (!is_ocean_tile(ptile)) {
+      land_tiles++;
+    }
+    candidates[tile_index(ptile)] = inland_lake_candidate(ptile);
+  } whole_map_iterate_end;
+
+  target = land_tiles * wld.map.server.lakes / 1000;
+  max_lake_size = MIN(MAX_INLAND_LAKE_SIZE,
+                      MIN(terrain_control.lake_max_size,
+                          1 + wld.map.server.lakes / 15));
+  max_attempts = MAX(map_num_tiles() * 4, target * 100);
+
+  while (made < target && attempts++ < max_attempts) {
+    struct tile *basin[MAX_INLAND_LAKE_SIZE];
+    struct tile *center =
+      index_to_tile(&(wld.map), fc_rand(MAP_INDEX_SIZE));
+    int basin_size = 0;
+    int wanted;
+
+    if (!candidates[tile_index(center)]) {
+      continue;
+    }
+
+    wanted = 1 + fc_rand(max_lake_size);
+    basin[basin_size++] = center;
+
+    while (basin_size < wanted && made + basin_size < target) {
+      struct tile *next = nullptr;
+      int choices = 0;
+      int i;
+
+      for (i = 0; i < basin_size; i++) {
+        adjc_iterate(&(wld.map), basin[i], adjacent) {
+          bool already_selected = FALSE;
+          int j;
+
+          if (!candidates[tile_index(adjacent)]) {
+            continue;
+          }
+          for (j = 0; j < basin_size; j++) {
+            if (basin[j] == adjacent) {
+              already_selected = TRUE;
+              break;
+            }
+          }
+          if (!already_selected && fc_rand(++choices) == 0) {
+            next = adjacent;
+          }
+        } adjc_iterate_end;
+      }
+
+      if (next == nullptr) {
+        break;
+      }
+      basin[basin_size++] = next;
+    }
+
+    for (int i = 0; i < basin_size; i++) {
+      struct tile *ptile = basin[i];
+
+      tile_set_terrain(ptile, lake_ocean);
+      tile_set_resource(ptile, nullptr);
+      BV_CLR_ALL(ptile->extras);
+      tile_set_continent(ptile, 0);
+      candidates[tile_index(ptile)] = FALSE;
+      made++;
+    }
+
+    /* Leave at least one tile of land between separately generated lakes. */
+    for (int i = 0; i < basin_size; i++) {
+      adjc_iterate(&(wld.map), basin[i], adjacent) {
+        candidates[tile_index(adjacent)] = FALSE;
+      } adjc_iterate_end;
+    }
+  }
+
+  log_verbose("Added %d inland lake tiles (target %d).", made, target);
+  free(candidates);
+}
+
+/**********************************************************************//**
   Make land simply does it all based on a generated heightmap
   1) with map.server.landpercent it generates a ocean/unknown map
   2) it then calls the above functions to generate the different terrains
@@ -1377,6 +1514,10 @@ bool map_fractal_generate(bool autosize, struct unit_type *initial_unit)
       remove_tiny_islands();
     }
 
+    if (MAPGEN_FAIR != wld.map.server.generator) {
+      make_inland_lakes();
+    }
+
     smooth_water_depth();
 
     /* Continent numbers must be assigned before regenerate_lakes() */
@@ -1509,8 +1650,8 @@ static void adjust_terrain_param(void)
     / (MAX_COLATITUDE * 2);
   forest_pct -= jungle_pct;
 
-  /* 3 - 11 % */
-  river_pct = (100 - polar) * (3 + wld.map.server.wetness / 12) / 100;
+  /* River density is independent of biome wetness. */
+  river_pct = (100 - polar) * wld.map.server.rivers / 100;
 
   /* 7 % if wetness == 50 && temperature == 50 */
   swamp_pct = factor * MAX(0, (wld.map.server.wetness * 12 - 150
@@ -1944,7 +2085,7 @@ static int count_card_adjc_elevated_tiles(struct tile *ptile)
 **************************************************************************/
 static bool create_island(int islemass, struct gen234_state *pstate)
 {
-  int i, nat_x, nat_y;
+  int i, adj, nat_x, nat_y;
   long int tries = islemass * (2 + islemass / 20) + 99;
   bool j;
   struct tile *ptile
@@ -1962,12 +2103,22 @@ static bool create_island(int islemass, struct gen234_state *pstate)
   pstate->e = nat_x + 2;
   i = islemass - 1;
 
+  /* Amoeba-style growth rejects many candidate tiles; budget extra
+   * tries so islands still reach their target mass. */
+  tries += tries * (2 * wld.map.server.islandshape) / 100;
+
   while (i > 0 && tries-->0) {
     ptile = get_random_map_position_from_state(pstate);
     index_to_native_pos(&nat_x, &nat_y, tile_index(ptile));
+    adj = count_card_adjc_elevated_tiles(ptile);
 
     if ((!near_singularity(ptile) || fc_rand(50) < 25 )
-        && hmap(ptile) == 0 && count_card_adjc_elevated_tiles(ptile) > 0) {
+        && hmap(ptile) == 0 && adj > 0
+        /* Island shape: with high 'islandshape' prefer extending lobe
+         * tips (one land neighbor) and resist filling bays (several
+         * land neighbors), which grows amoeba-like coastlines. */
+        && (adj == 1 || wld.map.server.islandshape == 0
+            || fc_rand(300) >= wld.map.server.islandshape * (adj - 1))) {
       hmap(ptile) = 1;
       i--;
       if (nat_y >= pstate->s - 1 && pstate->s < MAP_NATIVE_HEIGHT - 2) {
@@ -3078,6 +3229,130 @@ static void fair_map_make_huts(struct fair_tile *pmap)
 }
 
 /**********************************************************************//**
+  Carve lakes into the fair-island template. Since this happens before the
+  template is copied, every player or team receives the same basins.
+**************************************************************************/
+static void fair_map_make_lakes(struct fair_tile *pmap,
+                                struct fair_tile **land_tiles,
+                                int size)
+{
+  bool *candidates;
+  struct terrain *lake_ocean;
+  int target;
+  int made = 0;
+  int attempts = 0;
+  int max_lake_size;
+
+  if (wld.map.server.lakes <= 0 || terrain_control.lake_max_size <= 0) {
+    return;
+  }
+
+  lake_ocean = most_shallow_ocean(FALSE);
+  if (lake_ocean == nullptr) {
+    return;
+  }
+
+  target = size * wld.map.server.lakes / 1000;
+  if (target <= 0) {
+    return;
+  }
+
+  max_lake_size = MIN(MAX_INLAND_LAKE_SIZE,
+                      MIN(terrain_control.lake_max_size,
+                          1 + wld.map.server.lakes / 15));
+  candidates = fc_calloc(MAP_INDEX_SIZE, sizeof(*candidates));
+
+  for (int i = 0; i < size; i++) {
+    struct fair_tile *pftile = land_tiles[i];
+    bool suitable = !(pftile->flags & FTF_STARTPOS);
+
+    for (int j = 0; suitable && j < MAP_NUM_VALID_DIRS; j++) {
+      struct fair_tile *adjacent =
+        fair_map_tile_step(pmap, pftile, MAP_VALID_DIRS[j]);
+
+      if (adjacent == nullptr
+          || !(adjacent->flags & FTF_ASSIGNED)
+          || adjacent->flags & FTF_OCEAN
+          || adjacent->flags & FTF_STARTPOS) {
+        suitable = FALSE;
+      }
+    }
+    candidates[pftile - pmap] = suitable;
+  }
+
+  while (made < target && attempts++ < size * 20) {
+    struct fair_tile *basin[MAX_INLAND_LAKE_SIZE];
+    struct fair_tile *center = land_tiles[fc_rand(size)];
+    int basin_size = 0;
+    int wanted;
+
+    if (!candidates[center - pmap]) {
+      continue;
+    }
+
+    wanted = 1 + fc_rand(max_lake_size);
+    basin[basin_size++] = center;
+
+    while (basin_size < wanted && made + basin_size < target) {
+      struct fair_tile *next = nullptr;
+      int choices = 0;
+
+      for (int i = 0; i < basin_size; i++) {
+        for (int j = 0; j < MAP_NUM_VALID_DIRS; j++) {
+          struct fair_tile *adjacent =
+            fair_map_tile_step(pmap, basin[i], MAP_VALID_DIRS[j]);
+          bool already_selected = FALSE;
+
+          if (adjacent == nullptr || !candidates[adjacent - pmap]) {
+            continue;
+          }
+          for (int k = 0; k < basin_size; k++) {
+            if (basin[k] == adjacent) {
+              already_selected = TRUE;
+              break;
+            }
+          }
+          if (!already_selected && fc_rand(++choices) == 0) {
+            next = adjacent;
+          }
+        }
+      }
+
+      if (next == nullptr) {
+        break;
+      }
+      basin[basin_size++] = next;
+    }
+
+    for (int i = 0; i < basin_size; i++) {
+      struct fair_tile *pftile = basin[i];
+
+      pftile->flags |= FTF_OCEAN | FTF_NO_RESOURCE | FTF_NO_HUT;
+      pftile->pterrain = lake_ocean;
+      pftile->presource = nullptr;
+      BV_CLR_ALL(pftile->extras);
+      candidates[pftile - pmap] = FALSE;
+      made++;
+    }
+
+    for (int i = 0; i < basin_size; i++) {
+      for (int j = 0; j < MAP_NUM_VALID_DIRS; j++) {
+        struct fair_tile *adjacent =
+          fair_map_tile_step(pmap, basin[i], MAP_VALID_DIRS[j]);
+
+        if (adjacent != nullptr) {
+          candidates[adjacent - pmap] = FALSE;
+        }
+      }
+    }
+  }
+
+  log_verbose("Added %d inland lake tiles to fair island template "
+              "(target %d).", made, target);
+  free(candidates);
+}
+
+/**********************************************************************//**
   Generate a map where an island would be placed in the center.
 **************************************************************************/
 static struct fair_tile *fair_map_island_new(int size, int startpos_num)
@@ -3117,6 +3392,16 @@ static struct fair_tile *fair_map_island_new(int size, int startpos_num)
 
   size = CLIP(startpos_num, size, ARRAY_SIZE(land_tiles));
   fantasy = (size * 2) / 5;
+  if (wld.map.server.islandshape > 0 && size > 1) {
+    /* FAIR starts with a compact core ('fantasy') and then extends from
+     * its recent coastline. Shrinking that core makes the extension phase
+     * dominate, producing the same lobes, necks and long peninsulas that
+     * islandshape creates in the classic island generators. The template
+     * is still copied unchanged for every player/team, preserving fairness. */
+    int compact_pct = 100 - 75 * wld.map.server.islandshape / 100;
+
+    fantasy = MAX(1, fantasy * compact_pct / 100);
+  }
   pisland = fair_map_new();
   pftile = fair_map_pos_tile(pisland, MAP_NATIVE_WIDTH / 2, MAP_NATIVE_HEIGHT / 2);
   fc_assert(!fair_map_tile_border(pisland, pftile, sea_around_island));
@@ -3199,6 +3484,8 @@ static struct fair_tile *fair_map_island_new(int size, int startpos_num)
       terrain[j].count--;
     }
   }
+
+  fair_map_make_lakes(pisland, land_tiles, size);
 
   /* Make sea around the island. */
   for (i = 0; i < size; i++) {

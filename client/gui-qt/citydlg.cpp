@@ -2433,6 +2433,15 @@ void city_dialog::save_cma()
     QByteArray ask_bytes = ask->input_edit.text().toUtf8();
     QString text = ask_bytes.data();
     if (!text.isEmpty()) {
+      cm_init_parameter(&param);
+      if (!cma_is_city_under_agent(dlgcity, &param)
+          && cma_table->currentRow() >= 0
+          && cma_table->currentRow() < cmafec_preset_num()) {
+        cm_copy_parameter(
+            &param,
+            cmafec_preset_get_parameter(cma_table->currentRow()));
+      }
+
       param.allow_disorder = false;
       param.allow_specialists = true;
       param.require_happy = cma_celeb_checkbox->isChecked();
@@ -2473,6 +2482,14 @@ void city_dialog::cma_enable()
 void city_dialog::cma_changed()
 {
   struct cm_parameter param;
+
+  cm_init_parameter(&param);
+  if (!cma_is_city_under_agent(dlgcity, &param)
+      && cma_table->currentRow() >= 0
+      && cma_table->currentRow() < cmafec_preset_num()) {
+    cm_copy_parameter(
+        &param, cmafec_preset_get_parameter(cma_table->currentRow()));
+  }
 
   param.allow_disorder = false;
   param.allow_specialists = true;
