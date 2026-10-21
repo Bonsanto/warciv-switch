@@ -30,6 +30,9 @@
 /* Is this appimage build instead of regular one */
 #mesondefine FREECIV_APPIMAGE
 
+/* Local engine linked into the client with isolated game state */
+#mesondefine FREECIV_EMBEDDED_SERVER
+
 /* Version tag to follow */
 #mesondefine FOLLOWTAG
 
@@ -72,9 +75,9 @@
 /* Metaserver URL */
 #mesondefine FREECIV_META_URL
 
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(__SWITCH__)
 #define FREECIV_META_ENABLED
-#endif /* __EMSCRIPTEN__ */
+#endif /* Desktop metaserver support */
 
 /* Default modpack list URL */
 #mesondefine MODPACK_LIST_URL

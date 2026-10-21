@@ -8,6 +8,14 @@ Freeciv is a Free and Open Source empire-building strategy game inspired by the 
 
 Please see the [doc](doc) directory for a complete list of documentation files.
 
+Nintendo Switch 1 port
+======================
+
+This fork includes an experimental homebrew port with an embedded local engine,
+the Warciv largepox rules and Trident graphics. See the
+[Switch build and controls guide](platforms/switch/README.md). Physical console
+validation is still pending.
+
 Links
 =====
 Freeciv website: [Freeciv.org](https://www.freeciv.org/)

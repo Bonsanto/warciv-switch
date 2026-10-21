@@ -1292,7 +1292,23 @@ const char *fc_basename(const char *path)
    * modify */
   fc_strlcpy(buf, path, sizeof(buf));
 
+#ifdef __SWITCH__
+  {
+    size_t length = strlen(buf);
+    char *last;
+
+    if (length == 0) {
+      return ".";
+    }
+    while (length > 1 && buf[length - 1] == '/') {
+      buf[--length] = '\0';
+    }
+    last = strrchr(buf, '/');
+    return last != NULL && last[1] != '\0' ? last + 1 : buf;
+  }
+#else
   return basename(buf);
+#endif
 }
 
 /************************************************************************//**

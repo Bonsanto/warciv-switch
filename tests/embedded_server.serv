@@ -1,0 +1,9 @@
+/read classic-warclient-competitive.serv
+/set topology ""
+/set minplayers 0
+/set maxplayers 4
+/set timeout -1
+/set endturn 6
+/set savename embedded-smoke
+/set compresstype LIBZ
+/start

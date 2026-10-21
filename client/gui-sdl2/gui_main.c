@@ -88,6 +88,10 @@
 
 #include "gui_main.h"
 
+#ifdef __SWITCH__
+#include "fc_switch.h"
+#endif
+
 #define UNITS_TIMER_INTERVAL      128 /* milliseconds */
 #define MAP_SCROLL_TIMER_INTERVAL 500
 
@@ -585,6 +589,9 @@ void force_exit_from_event_loop(void)
 int FilterMouseMotionEvents(void *data, SDL_Event *event)
 {
   if (event->type == SDL_MOUSEMOTION) {
+#ifdef __SWITCH__
+    event->motion.state |= fc_switch_mouse_buttons();
+#endif
     static int x = 0, y = 0;
 
     if (((MOVE_STEP_X > 0) && (abs(event->motion.x - x) >= MOVE_STEP_X))
@@ -631,6 +638,9 @@ widget_id gui_event_loop(void *data,
   ID = ID_ERROR;
   t_last_map_scrolling = t_last_unit_anim = real_timer_next_call = SDL_GetTicks();
   while (ID == ID_ERROR) {
+#ifdef __SWITCH__
+    fc_switch_poll(main_data.screen);
+#endif
     /* ========================================= */
     /* Net check with 10ms delay event loop */
     if (net_socket >= 0) {
@@ -1011,7 +1021,11 @@ static void clear_double_messages_call(void)
 **************************************************************************/
 int main(int argc, char **argv)
 {
+#ifdef __SWITCH__
+  return fc_switch_main(argc, argv);
+#else
   return client_main(argc, argv, FALSE);
+#endif
 }
 
 /**********************************************************************//**
@@ -1046,6 +1060,11 @@ int ui_main(int argc, char *argv[])
     if (!gui_options.gui_sdl2_migrated_from_sdl) {
       migrate_options_from_sdl();
     }
+#ifdef __SWITCH__
+    GUI_SDL_OPTION(screen) = VIDEO_MODE(1280, 720);
+    GUI_SDL_OPTION(fullscreen) = TRUE;
+    GUI_SDL_OPTION(default_screen_size_set) = TRUE;
+#endif
     if (!GUI_SDL_OPTION(default_screen_size_set)) {
       if (font_size_parameter > 10) {
         GUI_SDL_OPTION(screen) = VIDEO_MODE(640 * font_size_parameter / 10,

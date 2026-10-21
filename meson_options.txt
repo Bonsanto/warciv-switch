@@ -73,6 +73,11 @@ option('server',
        value: 'enabled',
        description: 'What kind of server should be build, if any')
 
+option('embedded-server',
+       type: 'boolean',
+       value: false,
+       description: 'Run an isolated local engine inside the SDL2 client (ELF platforms)')
+
 option('aimodules',
        type: 'array',
        choices: ['classic', 'tex', 'stub'],

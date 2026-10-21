@@ -66,6 +66,10 @@
 #include "connectdlg_common.h"
 #include "tilespec.h"
 
+#ifdef FREECIV_EMBEDDED_SERVER
+#include "embedded_server.h"
+#endif
+
 #define WAIT_BETWEEN_TRIES 100000 /* usecs */
 
 #ifdef FREECIV_PATIENT_CONNECT
@@ -126,7 +130,9 @@ bool is_server_running(void)
   if (server_quitting) {
     return FALSE;
   }
-#ifdef HAVE_USABLE_FORK
+#ifdef FREECIV_EMBEDDED_SERVER
+  return fc_embedded_running();
+#elif defined(HAVE_USABLE_FORK)
   return (server_pid > 0);
 #elif FREECIV_MSWINDOWS
   return (server_process != INVALID_HANDLE_VALUE);
@@ -152,6 +158,14 @@ bool can_client_access_hack(void)
 **************************************************************************/
 void client_kill_server(bool force)
 {
+#ifdef FREECIV_EMBEDDED_SERVER
+  /* Stop cooperatively in the engine's own thread. This also joins an
+   * engine that has already exited, before its state can be reused. */
+  fc_embedded_stop();
+  server_quitting = FALSE;
+  client_has_hack = FALSE;
+  return;
+#endif
 #ifdef HAVE_USABLE_FORK
   if (server_quitting && server_pid > 0) {
     /* Already asked to /quit.
@@ -223,7 +237,8 @@ void client_kill_server(bool force)
 **************************************************************************/
 bool client_start_server(void)
 {
-#if !defined(HAVE_USABLE_FORK) && !defined(FREECIV_MSWINDOWS)
+#if !defined(HAVE_USABLE_FORK) && !defined(FREECIV_MSWINDOWS) \
+    && !defined(FREECIV_EMBEDDED_SERVER)
   /* Can't do much without fork */
   return FALSE;
 #else /* HAVE_USABLE_FORK || FREECIV_MSWINDOWS */
@@ -232,9 +247,16 @@ bool client_start_server(void)
   char savesdir[MAX_LEN_PATH];
   char scensdir[MAX_LEN_PATH];
   char *storage;
+#ifdef FREECIV_EMBEDDED_SERVER
+  const char *local_host = "127.0.0.1";
+#else
+  const char *local_host = "localhost";
+#endif
+#ifndef FREECIV_EMBEDDED_SERVER
   char *ruleset;
+#endif
 
-#if !defined(HAVE_USABLE_FORK)
+#if !defined(HAVE_USABLE_FORK) && !defined(FREECIV_EMBEDDED_SERVER)
   /* Above also implies that this is FREECIV_MSWINDOWS ->
    * Windows that can't use fork() */
   STARTUPINFO si;
@@ -258,7 +280,9 @@ bool client_start_server(void)
   char scenscmdline[512];
 #endif /* !HAVE_USABLE_FORK -> FREECIV_MSWINDOWS */
 
-#ifdef FREECIV_IPV6_SUPPORT
+#ifdef FREECIV_EMBEDDED_SERVER
+  enum fc_addr_family family = FC_ADDR_IPV4;
+#elif defined(FREECIV_IPV6_SUPPORT)
   enum fc_addr_family family = FC_ADDR_ANY;
 #else
   enum fc_addr_family family = FC_ADDR_IPV4;
@@ -276,7 +300,7 @@ bool client_start_server(void)
    * by not starting from DEFAULT_SOCK_PORT but from one higher. */
   internal_server_port = find_next_free_port(DEFAULT_SOCK_PORT + 1,
                                              DEFAULT_SOCK_PORT + 1 + 10000,
-                                             family, "localhost", TRUE);
+                                             family, local_host, TRUE);
 
   if (internal_server_port < 0) {
     output_window_append(ftc_client, _("Couldn't start the server."));
@@ -293,9 +317,36 @@ bool client_start_server(void)
     return FALSE;
   }
 
+#ifndef FREECIV_EMBEDDED_SERVER
   ruleset = tileset_what_ruleset(tileset);
+#endif
 
-#ifdef HAVE_USABLE_FORK
+#ifdef FREECIV_EMBEDDED_SERVER
+  {
+    struct fc_embedded_config config = {0};
+
+    fc_snprintf(savesdir, sizeof(savesdir), "%s/saves", storage);
+    fc_snprintf(scensdir, sizeof(scensdir), "%s/scenarios", storage);
+    if (!make_dir(savesdir, DIRMODE_DEFAULT)
+        || !make_dir(scensdir, DIRMODE_DEFAULT)) {
+      output_window_append(ftc_client, _("Couldn't create the game storage directory."));
+      return FALSE;
+    }
+    config.port = internal_server_port;
+    config.ruleset = "classic-warclient";
+    config.script = scriptfile != NULL ? scriptfile
+                    : (savefile == NULL ? "switch-largepox.serv" : NULL);
+    config.savefile = savefile;
+    config.saves = savesdir;
+    config.scenarios = scensdir;
+    fc_snprintf(buf, sizeof(buf), "%s/engine.log", storage);
+    config.logfile = buf;
+    if (fc_embedded_start(&config) != 0) {
+      output_window_append(ftc_client, _("Couldn't start the local game engine."));
+      return FALSE;
+    }
+  }
+#elif defined(HAVE_USABLE_FORK)
   {
     int argc = 0;
     const int max_nargs = 25;
@@ -575,10 +626,14 @@ bool client_start_server(void)
 #endif /* HAVE_USABLE_FORK */
 
   /* A reasonable number of tries */
-  while (connect_to_server(user_name, "localhost", internal_server_port,
+  while (connect_to_server(user_name, local_host, internal_server_port,
                            buf, sizeof(buf)) == -1) {
     fc_usleep(WAIT_BETWEEN_TRIES);
-#ifdef HAVE_USABLE_FORK
+#ifdef FREECIV_EMBEDDED_SERVER
+    if (!fc_embedded_running()) {
+      break;
+    }
+#elif defined(HAVE_USABLE_FORK)
 #ifndef FREECIV_MSWINDOWS
     if (waitpid(server_pid, NULL, WNOHANG) != 0) {
       break;

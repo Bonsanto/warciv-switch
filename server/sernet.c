@@ -91,6 +91,10 @@
 
 #include "sernet.h"
 
+#ifdef FREECIV_EMBEDDED_SERVER
+#include "embedded_server.h"
+#endif
+
 static struct connection connections[MAX_NUM_CONNECTIONS];
 
 static int *listen_socks;
@@ -127,7 +131,11 @@ static void send_ping_times_to_all(void);
 static void get_lanserver_announcement(void);
 static void send_lanserver_response(void);
 
+#ifdef FREECIV_EMBEDDED_SERVER
+static bool no_input = TRUE;
+#else
 static bool no_input = FALSE;
+#endif
 
 /* Avoid compiler warning about defined, but unused function
  * by defining it only when needed */
@@ -573,6 +581,12 @@ enum server_events server_sniff_all_input(void)
 
   while (TRUE) {
     int selret;
+
+#ifdef FREECIV_EMBEDDED_SERVER
+    if (fc_embedded_should_stop()) {
+      server_quit();
+    }
+#endif
 
     con_prompt_on();   /* accepting new input */
 

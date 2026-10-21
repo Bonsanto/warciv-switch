@@ -33,6 +33,10 @@
 #include "widget.h"
 #include "widget_p.h"
 
+#ifdef __SWITCH__
+#include "fc_switch.h"
+#endif
+
 struct utf8_char {
   struct utf8_char *next;
   struct utf8_char *prev;
@@ -680,6 +684,19 @@ static widget_id edit_mouse_button_down(SDL_MouseButtonEvent *button_event,
 **************************************************************************/
 enum edit_return_codes edit_field(struct widget *edit_widget)
 {
+#ifdef __SWITCH__
+  char text[1024];
+  int accepted;
+
+  accepted = fc_switch_keyboard(edit_widget->string_utf8->text,
+                                text, sizeof(text),
+                                get_wflags(edit_widget) & WF_PASSWD_EDIT);
+  if (accepted) {
+    copy_chars_to_utf8_str(edit_widget->string_utf8, text);
+  }
+  set_wstate(edit_widget, FC_WS_NORMAL);
+  return accepted ? ED_RETURN : ED_ESC;
+#else
   struct text_edit edt;
   struct utf8_char ___last;
   struct utf8_char *input_chain_tmp = NULL;
@@ -817,4 +834,5 @@ enum edit_return_codes edit_field(struct widget *edit_widget)
 #endif /* 0 */
 
   return ret;
+#endif
 }

@@ -1,0 +1,4 @@
+# The existing largepox rules and map settings, with overhead Trident geometry.
+/read classic-warclient-competitive.serv
+/set topology ""
+/set maxplayers 4

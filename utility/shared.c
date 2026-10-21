@@ -1799,6 +1799,16 @@ bool make_dir(const char *pathname, int mode)
     /* Don't consider Windows Drive a directory to create, but skip it. */
     dir += 3;
   }
+#ifdef __SWITCH__
+  else {
+    char *device = strchr(dir, ':');
+
+    if (device != nullptr && device[1] == '/') {
+      /* sdmc:/ and romfs:/ are mounted devices, not directories to create. */
+      dir = device + 2;
+    }
+  }
+#endif
 
   do {
     dir = strchr(dir, DIR_SEPARATOR_CHAR);
@@ -1886,6 +1896,17 @@ bool path_is_absolute(const char *filename)
   if (!filename) {
     return FALSE;
   }
+
+#ifdef __SWITCH__
+  {
+    const char *device = strchr(filename, ':');
+
+    if (device != nullptr && device[1] == '/'
+        && strchr(filename, '/') == device + 1) {
+      return TRUE;
+    }
+  }
+#endif
 
 #ifdef FREECIV_MSWINDOWS
   if (strchr(filename, ':')) {

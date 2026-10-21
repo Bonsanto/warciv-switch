@@ -82,6 +82,24 @@ endif
 
 host_system = host_machine.system()
 
+embedded_server_enabled = get_option('embedded-server')
+if embedded_server_enabled
+  if host_system not in ['linux', 'horizon']
+    error('embedded-server needs ELF tools; use a Linux build or the Switch cross file')
+  endif
+  if get_option('default_library') != 'static' or get_option('syslua') != 'false'
+    error('embedded-server requires -Ddefault_library=static -Dsyslua=false')
+  endif
+  if get_option('server') != 'enabled' or get_option('tools') != []
+    error('embedded-server requires -Dserver=enabled -Dtools=[]')
+  endif
+  foreach client : get_option('clients')
+    if client not in ['sdl2', 'stub']
+      error('embedded-server currently supports the sdl2 and stub clients')
+    endif
+  endforeach
+endif
+
 meta_url = 'https://meta.freeciv.org/metaserver.php'
 mp_list_url = ''
 storage_dir = ''
@@ -122,6 +140,10 @@ endif
 priv_conf_data = configuration_data()
 pub_conf_data = configuration_data()
 liblua_conf_data = configuration_data()
+
+if embedded_server_enabled
+  pub_conf_data.set('FREECIV_EMBEDDED_SERVER', 1)
+endif
 
 pub_conf_data.set('FREECIV_META_URL', '"' + meta_url + '"')
 
@@ -201,6 +223,9 @@ else
 endif
 
 if storage_dir == ''
+  if host_system == 'horizon'
+    def_storage_dir = 'sdmc:/switch/warciv'
+  endif
   storage_dir = def_storage_dir
 endif
 
@@ -210,7 +235,14 @@ endif
 pub_conf_data.set('FREECIV_STORAGE_DIR', '"' + storage_dir + '"')
 priv_conf_data.set('FREECIV_STORAGE_DIR', storage_dir)
 
-if host_system == 'windows'
+if host_system == 'horizon'
+  default_localeprefix = get_option('prefix')
+  priv_conf_data.set('ALWAYS_ROOT', 1)
+  priv_conf_data.set('DEFAULT_DATA_PATH',
+                    '"sdmc:/switch/warciv/data;romfs:/data"')
+  priv_conf_data.set('DEFAULT_SAVE_PATH', '"sdmc:/switch/warciv/saves"')
+  priv_conf_data.set('DEFAULT_SCENARIO_PATH', '"sdmc:/switch/warciv/scenarios"')
+elif host_system == 'windows'
   default_localeprefix = '.'
 
   priv_conf_data.set('DEFAULT_DATA_PATH',
@@ -322,7 +354,7 @@ endif
 
 qtver = get_option('qtver')
 
-if c_compiler.compiles('''
+if host_system != 'horizon' and c_compiler.compiles('''
 #include <threads.h>
 int main(void) { return thrd_create((void *)0, (void *)0, (void *)0); }''',
   name: 'C11 threads')
@@ -444,6 +476,10 @@ foreach hdr : pub_headers
 endforeach
 
 foreach hdr : priv_headers
+  if host_system == 'horizon' and hdr == 'termios.h'
+    # newlib ships this forwarding header, but libnx has no terminal driver.
+    continue
+  endif
   if c_compiler.has_header(hdr, args: header_arg)
     priv_conf_data.set('HAVE_' + hdr.underscorify().to_upper(), 1)
   endif
@@ -574,7 +610,9 @@ if c_compiler.has_function('getaddrinfo',
                            dependencies: net_dep,
                            args: ['-O'])
   priv_conf_data.set('HAVE_GETADDRINFO', 1)
-  pub_conf_data.set('FREECIV_IPV6_SUPPORT', 1)
+  if host_system != 'horizon'
+    pub_conf_data.set('FREECIV_IPV6_SUPPORT', 1)
+  endif
 else
   # Maybe it exist as a macro instead?
   if c_compiler.compiles(net_incl + '''
@@ -582,7 +620,9 @@ int main(void) { getaddrinfo(NULL, NULL, NULL, NULL); }''',
   include_directories: include_directories(cross_inc_path),
   name: 'getaddrinfo() as a macro')
     priv_conf_data.set('HAVE_GETADDRINFO', 1)
-    pub_conf_data.set('FREECIV_IPV6_SUPPORT', 1)
+    if host_system != 'horizon'
+      pub_conf_data.set('FREECIV_IPV6_SUPPORT', 1)
+    endif
   else
     warning('IPv6 support not enabled')
   endif
@@ -739,7 +779,7 @@ else
   if not c_compiler.has_header('zlib.h', args: header_arg)
     error('Mandatory header zlib.h not found!')
   endif
-  icu_dep = dependency('icu-uc')
+  icu_dep = dependency('icu-uc', static: host_system == 'horizon')
   syslua = get_option('syslua')
   if syslua != 'false'
     lua_dep_tmp = dependency('lua-5.5', 'lua-55', 'lua55', 'lua5.5', required:false)
@@ -1001,7 +1041,11 @@ if host_system == 'emscripten'
   curl_dep = []
   m_dep = []
 else
-  curl_dep = c_compiler.find_library('curl', dirs: cross_lib_path)
+  if host_system == 'horizon'
+    curl_dep = dependency('libcurl', static: true)
+  else
+    curl_dep = c_compiler.find_library('curl', dirs: cross_lib_path)
+  endif
   m_dep = c_compiler.find_library('m', dirs: cross_lib_path)
 endif
 
@@ -1019,7 +1063,7 @@ int main(void) { curl_mime *mime = curl_mime_init(NULL); }''',
   endif
 endif
 
-if host_system != 'emscripten'
+if host_system != 'emscripten' and get_option('fcdb').contains('sqlite3')
   sqlite3_dep = c_compiler.find_library('sqlite3', dirs: cross_lib_path)
 else
   sqlite3_dep = []
@@ -1182,7 +1226,7 @@ common_inc = include_directories(cross_inc_path,
   lua_inc_path, 'dependencies/luasql/src', 'dependencies/tinycthread',
   'dependencies/tolua-5.2/include', 'dependencies/cvercmp',
   'utility', 'common', 'common/networking', 'common/scriptcore',
-  'common/aicore')
+  'common/aicore', 'platforms/standalone')
 
 server_inc = [common_inc, include_directories('server', 'server/advisors',
               'server/scripting', 'server/generator', 'server/ruleset',
@@ -1614,6 +1658,11 @@ ais = static_library('fc_ai',
 
 endif
 
+embedded_server_src = []
+if embedded_server_enabled
+  embedded_server_src = files('server/embedded.c')
+endif
+
 server_lib = static_library('fc_server',
   'ai/aitraits.c',
   'ai/difficulty.c',
@@ -1696,7 +1745,7 @@ server_lib = static_library('fc_server',
   'server/unittools.c',
   'server/voting.c',
   include_directories: server_inc,
-  sources: [ verhdr, pack_server,
+  sources: [ verhdr, pack_server, embedded_server_src,
              tolua.process('server/scripting/tolua_fcdb.pkg',
                            'server/scripting/tolua_server.pkg')],
   dependencies: [ lua_dep, dynai_dep ]
@@ -1704,7 +1753,7 @@ server_lib = static_library('fc_server',
 
 endif
 
-if server_type != 'disabled'
+if server_type != 'disabled' and not embedded_server_enabled
   executable(server_binary_name,
     'server/srv_entrypoint.c',
     servericon,
@@ -2318,6 +2367,43 @@ nations = [
   'zimbabwean',
   'zulu'
   ]
+
+embedded_client_sources = []
+switch_client_sources = []
+switch_client_includes = []
+switch_media_dependencies = []
+if host_system == 'horizon'
+  switch_client_sources = files('platforms/switch/runtime.c')
+  switch_client_includes = include_directories('platforms/switch', 'client/gui-sdl2')
+  # The portlibs SDL add-on .pc files do not list their static codec/font
+  # dependencies, so include those libraries explicitly for the NRO link.
+  foreach media : ['freetype2', 'harfbuzz', 'libpng', 'libjpeg', 'libwebp',
+                   'libmodplug', 'libmpg123', 'opusfile', 'vorbisfile']
+    switch_media_dependencies += dependency(media, static: true)
+  endforeach
+endif
+if embedded_server_enabled
+  embedded_object = custom_target('isolated_server',
+    input: [server_lib, common_lib, ais],
+    output: 'fc_embedded_server.o',
+    command: [python_exe, files('platforms/standalone/isolate_server.py'),
+              '--ld', find_program('ld'), '--nm', find_program('nm'),
+              '--objcopy', find_program('objcopy'), '@OUTPUT@', '@INPUT@'])
+  embedded_client_sources = [files('platforms/standalone/embedded_server.c'),
+                             embedded_object]
+
+  embedded_smoke = executable('embedded-server-smoke',
+    'tests/embedded_server.c',
+    embedded_client_sources,
+    include_directories: common_inc,
+    link_with: common_lib,
+    dependencies: [m_dep, net_dep, gettext_dep, fcdb_dep, mw_extra_dep])
+  if not meson.is_cross_build()
+    test('embedded-server-largepox', python_exe,
+         args: [files('tests/embedded_server_test.py'), embedded_smoke, s_root],
+         timeout: 180)
+  endif
+endif
 
 if get_option('clients') != []
 
@@ -4033,12 +4119,14 @@ executable('freeciv-sdl2',
   'client/gui-sdl2/widget_window.c',
   'client/gui-sdl2/wldlg.c',
   sdl2_gfx_src,
+  embedded_client_sources,
+  switch_client_sources,
   clienticon,
   c_args: sdl2_gfx_cargs,
-  include_directories: [client_inc, sdl2_gfx_inc ],
+  include_directories: [client_inc, sdl2_gfx_inc, switch_client_includes],
   dependencies: [sdl2main_dep, audio_dep,
                  sdl2_image_dep, sdl2_gfx_dep, sdl2_ttf_dep,
-                 net_dep, gettext_dep, mw_extra_dep],
+                 net_dep, gettext_dep, mw_extra_dep, switch_media_dependencies],
   link_with: client_common,
   name_suffix: ems_suffix,
   install: true,
@@ -4234,6 +4322,7 @@ endif
 if get_option('clients').contains('stub')
 
 executable('freeciv-stub',
+  embedded_client_sources,
   'client/gui_cbsetter.c',
   'client/gui_interface.c',
   'client/gui-stub/canvas.c',
