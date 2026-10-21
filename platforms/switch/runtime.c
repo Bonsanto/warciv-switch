@@ -28,6 +28,7 @@ static Uint32 last_poll;
 static Uint32 last_pan;
 static Uint32 last_direction;
 static Uint32 mouse_buttons;
+static int exit_locked;
 static float pointer_x = 640;
 static float pointer_y = 360;
 
@@ -73,6 +74,10 @@ static void shutdown_switch(void)
   fc_embedded_stop();
   socketExit();
   romfsExit();
+  if (exit_locked) {
+    appletUnlockExit();
+    exit_locked = 0;
+  }
 }
 
 static int startup_error(const char *message, Result result)
@@ -108,6 +113,9 @@ int fc_switch_main(int argc, char **argv)
     return startup_error("No se pudo iniciar la comunicacion local", result);
   }
   atexit(shutdown_switch);
+  /* Give the engine time to finish its save when Horizon requests exit.
+   * libnx allows at most 15 seconds before forced termination. */
+  exit_locked = R_SUCCEEDED(appletLockExit());
 
   mkdir("sdmc:/switch", 0777);
   mkdir("sdmc:/switch/warciv", 0777);
@@ -115,6 +123,9 @@ int fc_switch_main(int argc, char **argv)
   mkdir("sdmc:/switch/warciv/scenarios", 0777);
   setenv("FREECIV_DATA_PATH", "sdmc:/switch/warciv/data;romfs:/data", 1);
   setenv("FREECIV_LOCAL_ENCODING", "UTF-8", 1);
+  /* SDL's Switch driver disables this by default. Legacy modal loops use
+   * mouse events; the client filters duplicates when raw touch is handled. */
+  SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
 
   arguments = calloc((size_t) argc + 5, sizeof(*arguments));
   if (arguments == NULL) {

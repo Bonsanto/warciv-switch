@@ -38,6 +38,12 @@ Los guardados se escriben en `sdmc:/switch/warciv/saves`, la configuración en
 `sdmc:/switch/warciv` y el registro del motor en `sdmc:/switch/warciv/engine.log`.
 Los datos opcionales de `sdmc:/switch/warciv/data` tienen prioridad sobre RomFS.
 
+Al cerrar una partida en curso, el motor crea un guardado `*-interrupted.sav.*`
+si los autoguardados de interrupción siguen activados, y espera a que termine
+la escritura antes de salir. El cierre solicitado por el sistema dispone de
+hasta 15 segundos para completar esa operación. El botón − permite guardar
+manualmente. La interfaz usa 1280 × 720 tanto en portátil como en dock.
+
 El perfil `switch-largepox.serv` carga el perfil competitivo existente y cambia
 la orientación a mapa cenital, que corresponde a Trident. Conserva las reglas,
 la IA, los recursos, el comercio y los ajustes de islas de largepox.
@@ -74,9 +80,13 @@ docker run --rm --network none -v "$PWD:/src" -w /src warciv-switch-build \
   meson test -C build-embedded embedded-server-largepox --print-errorlogs
 ```
 
-La prueba completa dos partidas con cuatro IA, comprueba que ambas terminan,
-que el estado del cliente permanece intacto y que el guardado conserva
-`classic-warclient`, `ailargepox`, el comercio Warclient y la geometría cenital.
+La prueba completa dos partidas con cuatro IA, detiene otra en curso y carga
+su guardado de interrupción dos veces. Comprueba que el estado del cliente
+permanece intacto y que los guardados conservan `classic-warclient`,
+`ailargepox`, el comercio Warclient y la geometría cenital. También se ha
+ejecutado con AddressSanitizer, UndefinedBehaviorSanitizer y detección de fugas
+en el motor Linux. Una prueba del cliente SDL2 sin pantalla física verifica
+que un gesto táctil inicia una sola partida y que salir conserva su guardado.
 
 ## Arquitectura
 
@@ -85,7 +95,8 @@ El cliente SDL2 y el motor conservan copias independientes de libfreeciv y Lua.
 motor y separa sus datos modificables. El motor se ejecuta en un hilo con pila
 de 4 MiB; se detiene de forma cooperativa y se espera a que termine antes de
 restaurar su estado inicial para una nueva partida. Sus llamadas a `exit()`
-terminan ese hilo, no la aplicación.
+terminan ese hilo, no la aplicación. Sus funciones de limpieza registradas con
+`atexit()` se ejecutan al terminar cada sesión, antes de restaurar sus datos.
 
 El protocolo existente viaja exclusivamente por IPv4 de loopback
 (`127.0.0.1`), con anuncios LAN y metaserver desactivados. Esto conserva la

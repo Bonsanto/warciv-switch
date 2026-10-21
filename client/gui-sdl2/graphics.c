@@ -647,11 +647,26 @@ bool set_video_mode(unsigned width, unsigned height, unsigned flags_in)
   if (flags_in & SDL_WINDOW_FULLSCREEN) {
     SDL_DisplayMode mode;
 
+#ifdef __SWITCH__
+    /* The Switch driver reports a 1080p desktop even in handheld mode.
+     * Select the requested mode explicitly to retain the 720p interface. */
+    if (SDL_GetWindowDisplayMode(main_data.screen, &mode) != 0) {
+      return FALSE;
+    }
+    mode.w = width;
+    mode.h = height;
+    if (SDL_SetWindowDisplayMode(main_data.screen, &mode) != 0
+        || SDL_SetWindowFullscreen(main_data.screen,
+                                   SDL_WINDOW_FULLSCREEN) != 0) {
+      return FALSE;
+    }
+#else
     /* Use SDL_WINDOW_FULLSCREEN_DESKTOP instead of real SDL_WINDOW_FULLSCREEN */
     SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN_DESKTOP);
     SDL_GetWindowDisplayMode(main_data.screen, &mode);
     width = mode.w;
     height = mode.h;
+#endif
   }
 
   if (!create_surfaces(width, height)) {

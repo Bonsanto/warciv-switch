@@ -8086,6 +8086,7 @@ static bool load_ruleset_actions(struct section_file *file,
         }
         sz_strlcpy(paction->ui_name, ui_name);
       } section_list_iterate_end;
+      section_list_destroy(sec);
     }
   }
 
@@ -9724,6 +9725,10 @@ static bool load_rulesetdir(const char *rsdir, bool compat_mode,
   if (terrain_sections) {
     free(terrain_sections);
     terrain_sections = NULL;
+  }
+  if (tiledef_sections) {
+    free(tiledef_sections);
+    tiledef_sections = NULL;
   }
 
   if (ok) {

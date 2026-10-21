@@ -18,8 +18,41 @@ static atomic_int exit_status;
 static struct fc_embedded_config server_config;
 static unsigned char *initial_data;
 
+struct engine_exit_handler {
+  void (*callback)(void);
+  struct engine_exit_handler *next;
+};
+
+static struct engine_exit_handler *exit_handlers;
+static pthread_mutex_t exit_handlers_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 extern unsigned char fc_embedded_data_start[], fc_embedded_data_end[];
 extern unsigned char fc_embedded_bss_start[], fc_embedded_bss_end[];
+
+#if defined(__SANITIZE_ADDRESS__)
+/* This operation copies an ELF section, including padding and ASan's global
+ * redzones. Keep the shadow memory intact and leave normal game accesses
+ * instrumented. Volatile byte accesses avoid libc's memcpy interception. */
+__attribute__((no_sanitize_address, no_sanitize_undefined))
+static void engine_image_copy(void *destination, const void *source, size_t size)
+{
+  volatile unsigned char *out = destination;
+  const volatile unsigned char *in = source;
+
+  while (size-- > 0) {
+    *out++ = in != NULL ? *in++ : 0;
+  }
+}
+#else
+static void engine_image_copy(void *destination, const void *source, size_t size)
+{
+  if (source != NULL) {
+    memcpy(destination, source, size);
+  } else {
+    memset(destination, 0, size);
+  }
+}
+#endif
 
 static int reset_engine(void)
 {
@@ -33,10 +66,10 @@ static int reset_engine(void)
     if (initial_data == NULL) {
       return -1;
     }
-    memcpy(initial_data, fc_embedded_data_start, data_size);
+    engine_image_copy(initial_data, fc_embedded_data_start, data_size);
   }
-  memcpy(fc_embedded_data_start, initial_data, data_size);
-  memset(fc_embedded_bss_start, 0, bss_size);
+  engine_image_copy(fc_embedded_data_start, initial_data, data_size);
+  engine_image_copy(fc_embedded_bss_start, NULL, bss_size);
   return 0;
 }
 
@@ -67,7 +100,22 @@ static void free_config(void)
 
 static void server_finished(void *unused)
 {
+  struct engine_exit_handler *handler;
+
   (void) unused;
+  for (;;) {
+    pthread_mutex_lock(&exit_handlers_mutex);
+    handler = exit_handlers;
+    if (handler != NULL) {
+      exit_handlers = handler->next;
+    }
+    pthread_mutex_unlock(&exit_handlers_mutex);
+    if (handler == NULL) {
+      break;
+    }
+    handler->callback();
+    free(handler);
+  }
   atomic_store(&running, 0);
 }
 
@@ -165,9 +213,18 @@ void fc_embedded_exit(int status)
 
 int fc_embedded_atexit(void (*callback)(void))
 {
-  /* The engine belongs to a thread, not the process. Its normal shutdown
-   * is server_quit(); process exit handlers would outlive its state. */
-  (void) callback;
+  struct engine_exit_handler *handler = malloc(sizeof(*handler));
+
+  if (handler == NULL) {
+    return -1;
+  }
+  /* Run the engine's exit handlers in reverse registration order when its
+   * thread finishes, while its private data is still alive. */
+  handler->callback = callback;
+  pthread_mutex_lock(&exit_handlers_mutex);
+  handler->next = exit_handlers;
+  exit_handlers = handler;
+  pthread_mutex_unlock(&exit_handlers_mutex);
   return 0;
 }
 

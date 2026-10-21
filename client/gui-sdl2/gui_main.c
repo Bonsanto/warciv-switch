@@ -847,18 +847,31 @@ widget_id gui_event_loop(void *data,
           break;
 
         case SDL_MOUSEBUTTONDOWN:
+          if (main_data.event.button.which == SDL_TOUCH_MOUSEID
+              && finger_down_handler != NULL) {
+            break;
+          }
           if (mouse_button_down_handler) {
             ID = mouse_button_down_handler(&main_data.event.button, data);
           }
           break;
 
         case SDL_MOUSEBUTTONUP:
+          if (main_data.event.button.which == SDL_TOUCH_MOUSEID
+              && finger_up_handler != NULL) {
+            break;
+          }
           if (mouse_button_up_handler) {
             ID = mouse_button_up_handler(&main_data.event.button, data);
           }
           break;
 
         case SDL_MOUSEMOTION:
+          if (main_data.event.motion.which == SDL_TOUCH_MOUSEID
+              && (finger_down_handler != NULL || finger_up_handler != NULL
+                  || finger_motion_handler != NULL)) {
+            break;
+          }
           if (mouse_motion_handler) {
             ID = mouse_motion_handler(&main_data.event.motion, data);
           }
@@ -956,9 +969,14 @@ static void resize_window_callback(struct option *poption)
 static void fullscreen_callback(struct option *poption)
 {
   SDL_DisplayMode mode;
+#ifdef __SWITCH__
+  const Uint32 fullscreen_flag = SDL_WINDOW_FULLSCREEN;
+#else
+  const Uint32 fullscreen_flag = SDL_WINDOW_FULLSCREEN_DESKTOP;
+#endif
 
   if (GUI_SDL_OPTION(fullscreen)) {
-    SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    SDL_SetWindowFullscreen(main_data.screen, fullscreen_flag);
   } else {
     SDL_SetWindowFullscreen(main_data.screen, 0);
   }
@@ -968,7 +986,7 @@ static void fullscreen_callback(struct option *poption)
   if (!create_surfaces(mode.w, mode.h)) {
     /* Try to revert */
     if (!GUI_SDL_OPTION(fullscreen)) {
-      SDL_SetWindowFullscreen(main_data.screen, SDL_WINDOW_FULLSCREEN_DESKTOP);
+      SDL_SetWindowFullscreen(main_data.screen, fullscreen_flag);
     } else {
       SDL_SetWindowFullscreen(main_data.screen, 0);
     }

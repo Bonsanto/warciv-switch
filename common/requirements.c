@@ -280,7 +280,11 @@ void requirements_init(void)
 void requirements_free(void)
 {
   fc_mutex_destroy(&trmutex);
+  thr_req_data_list_iterate(trdatas, data) {
+    free(data);
+  } thr_req_data_list_iterate_end;
   thr_req_data_list_destroy(trdatas);
+  trdatas = nullptr;
 }
 
 /**********************************************************************//**

@@ -1961,6 +1961,13 @@ void fc__noreturn server_quit(void)
   if (server_state() == S_S_RUNNING) {
     /* Quitting mid-game. */
 
+#ifdef FREECIV_EMBEDDED_SERVER
+    /* The local engine ends with the application. Preserve the current
+     * phase before freeing its game state, and let save_system_close()
+     * finish writing it before the thread is joined. */
+    save_game_auto("Local game closed", AS_INTERRUPT);
+#endif
+
     phase_players_iterate(pplayer) {
       CALL_PLR_AI_FUNC(phase_finished, pplayer, pplayer);
       /* This has to be after all access to advisor data. */
