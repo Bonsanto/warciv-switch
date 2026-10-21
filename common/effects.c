@@ -917,6 +917,13 @@ int get_city_tile_output_bonus(const struct city *pcity,
 {
   fc_assert_ret_val(pcity != nullptr, 0);
 
+  const struct req_context city_center_context = {
+    .player = city_owner(pcity),
+    .city = pcity,
+    .tile = city_tile(pcity),
+    .output = poutput,
+  };
+
   return get_target_bonus_effects(nullptr,
                                   &(const struct req_context) {
                                     .player = city_owner(pcity),
@@ -924,7 +931,8 @@ int get_city_tile_output_bonus(const struct city *pcity,
                                     .tile = ptile,
                                     .output = poutput,
                                   },
-                                  nullptr,
+                                  effect_type == EFT_TILE_WORKABLE
+                                  ? &city_center_context : nullptr,
                                   effect_type);
 }
 

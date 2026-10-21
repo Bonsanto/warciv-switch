@@ -384,6 +384,7 @@ static void game_defaults(bool keep_ruleset_value)
     game.server.mgr_worldchance   = GAME_DEFAULT_MGR_WORLDCHANCE;
     game.server.multiresearch     = GAME_DEFAULT_MULTIRESEARCH;
     game.server.migration         = GAME_DEFAULT_MIGRATION;
+    game.server.ai_largepox       = GAME_DEFAULT_AI_LARGEPOX;
     game.server.trait_dist        = GAME_DEFAULT_TRAIT_DIST_MODE;
     game.server.min_players       = GAME_DEFAULT_MIN_PLAYERS;
     game.server.natural_city_names = GAME_DEFAULT_NATURALCITYNAMES;
@@ -410,6 +411,7 @@ static void game_defaults(bool keep_ruleset_value)
     game.server.save_options.save_private_map = TRUE;
     game.server.save_options.save_starts = TRUE;
     game.server.savepalace        = GAME_DEFAULT_SAVEPALACE;
+    game.server.wonders           = GAME_DEFAULT_WONDERS;
     game.server.scorelog          = GAME_DEFAULT_SCORELOG;
     game.server.scoreloglevel     = GAME_DEFAULT_SCORELOGLEVEL;
     game.server.scoreturn         = GAME_DEFAULT_SCORETURN - 1;

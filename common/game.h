@@ -169,6 +169,7 @@ struct civ_game {
       int mgr_worldchance;
       bool multiresearch;
       bool migration;
+      bool ai_largepox;
       enum trait_dist_mode trait_dist;
       int min_players;
       bool natural_city_names;
@@ -192,6 +193,7 @@ struct civ_game {
       unsigned autosaves; /* FIXME: char would be enough, but current settings.c code wants to
                              write sizeof(unsigned) bytes */
       bool savepalace;
+      bool wonders;
       bool homecaughtunits;
       char start_units[MAX_LEN_STARTUNIT];
       bool start_city;
@@ -518,11 +520,15 @@ static inline bool is_ruleset_compat_mode(void)
 
 #define GAME_DEFAULT_SAVEPALACE      TRUE
 
+#define GAME_DEFAULT_WONDERS         TRUE
+
 #define GAME_DEFAULT_HOMECAUGHTUNITS TRUE
 
 #define GAME_DEFAULT_NATURALCITYNAMES TRUE
 
 #define GAME_DEFAULT_MIGRATION        FALSE
+
+#define GAME_DEFAULT_AI_LARGEPOX      FALSE
 
 #define GAME_DEFAULT_MGR_TURNINTERVAL 5
 #define GAME_MIN_MGR_TURNINTERVAL     1

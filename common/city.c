@@ -1663,15 +1663,18 @@ bool city_got_defense_effect(const struct city *pcity,
 }
 
 /**********************************************************************//**
-  Return TRUE iff the city is happy. A happy city will start celebrating
-  soon.
-  A city can only be happy if half or more of the population is happy,
-  none of the population is unhappy or angry, and it has sufficient size.
+  Return TRUE iff the city's citizens are happy. A sufficiently large
+  happy city will start celebrating soon.
+
+  Happiness itself is independent of the minimum celebration size. This
+  lets a small happy city carry that state into the turn in which it grows
+  large enough to celebrate. base_city_celebrating() is responsible for
+  enforcing the size limit, so an undersized city still cannot celebrate
+  or grow by rapture.
 **************************************************************************/
 bool city_happy(const struct city *pcity)
 {
-  return (city_size_get(pcity) >= game.info.celebratesize
-          && pcity->feel[CITIZEN_ANGRY][FEELING_FINAL] == 0
+  return (pcity->feel[CITIZEN_ANGRY][FEELING_FINAL] == 0
           && pcity->feel[CITIZEN_UNHAPPY][FEELING_FINAL] == 0
           && pcity->feel[CITIZEN_HAPPY][FEELING_FINAL] >= (city_size_get(pcity) + 1) / 2);
 }

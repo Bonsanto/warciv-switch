@@ -743,7 +743,9 @@ Tile_Claimable
     other tile for requirements that depend on two tiles.
 
 Tile_Workable
-    If value > 0, city can work target tile.
+    If value > 0, city can work target tile. For this effect the city center
+    is available as the other tile, allowing a Tile-ranged MaxDistanceSq
+    requirement to distinguish inner and outer rings of the city map.
 
 Trade_Revenue_Bonus
     One time trade revenue bonus is multiplied by pow(2, amount/1000).

@@ -316,7 +316,15 @@ static void set_default_city_manager(struct cm_parameter *cmp,
 {
   int csize = city_size_get(pcity);
   int gsize = city_granary_size(csize);
-
+  bool largepox_founder
+    = game.server.ai_largepox
+      && is_ai(city_owner(pcity))
+      && pcity->production.kind == VUT_UTYPE
+      && utype_is_cityfounder(pcity->production.value.utype)
+      /* A population-cost founder cannot finish before the city grows past
+       * its population cost.  Shield-first at size one only stockpiles
+       * unusable production and postpones that growth. */
+      && csize > pcity->production.value.utype->pop_cost;
   cmp->require_happy = FALSE;
   cmp->allow_disorder = FALSE;
   cmp->allow_specialists = TRUE;
@@ -347,6 +355,19 @@ static void set_default_city_manager(struct cm_parameter *cmp,
   cmp->factor[O_LUXURY] = 0; /* Luxury only influences happiness. */
   cmp->factor[O_SCIENCE] = 2;
   cmp->happy_factor = 0;
+
+  if (largepox_founder) {
+    /* A human largepox opening works a forest/hill as soon as food permits,
+     * whereas the generic manager values food roughly four times as much as
+     * shields at size two. That leaves parallel Settlers crawling toward 40
+     * shields and explains most of the observed turn-20 city-count gap. Keep
+     * +1 food, but prefer the fastest legal founder completion. */
+    cmp->factor[O_FOOD] = 10;
+    cmp->factor[O_SHIELD] = 20;
+    cmp->factor[O_GOLD] = 1;
+    cmp->factor[O_SCIENCE] = 1;
+
+  }
 
   if (gsize == pcity->food_stock) {
     cmp->minimal_surplus[O_FOOD] = 0;

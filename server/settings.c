@@ -2461,6 +2461,15 @@ static struct setting settings[] = {
            nullptr, nullptr, nullptr, trait_dist_name,
            GAME_DEFAULT_TRAIT_DIST_MODE)
 
+  GEN_BOOL("ailargepox", game.server.ai_largepox,
+           SSET_RULES_FLEXIBLE, SSET_ECONOMICS, SSET_SITUATIONAL,
+           ALLOW_NONE, ALLOW_BASIC,
+           N_("Warclient largepox strategy for default AIs"),
+           N_("Makes default AI players build a limited core of cities, "
+              "complete its trade-route network, and then pursue rapture "
+              "growth in cities of size three or greater."),
+           nullptr, nullptr, GAME_DEFAULT_AI_LARGEPOX)
+
   GEN_INT("razechance", game.server.razechance,
           SSET_RULES, SSET_MILITARY, SSET_RARE, ALLOW_NONE, ALLOW_BASIC,
           N_("Chance for conquered building destruction"),
@@ -2806,6 +2815,14 @@ static struct setting settings[] = {
               "some rulesets, buildings other than the palace are affected "
               "by this setting.)"),
            nullptr, nullptr, GAME_DEFAULT_SAVEPALACE)
+
+  GEN_BOOL("wonders", game.server.wonders,
+           SSET_RULES_FLEXIBLE, SSET_SOCIOLOGY, SSET_SITUATIONAL,
+           ALLOW_NONE, ALLOW_BASIC,
+           N_("Allow construction of Great Wonders"),
+           N_("If disabled, players cannot construct Great Wonders. "
+              "Small Wonders such as the Palace remain available."),
+           nullptr, nullptr, GAME_DEFAULT_WONDERS)
 
   GEN_BOOL("homecaughtunits", game.server.homecaughtunits,
            SSET_RULES_FLEXIBLE, SSET_MILITARY, SSET_RARE,

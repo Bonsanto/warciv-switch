@@ -27,6 +27,17 @@
 #include "advtools.h"
 
 struct player;
+struct city;
+
+enum dai_growth_state {
+  DAI_GROWTH_BOOTSTRAP,
+  DAI_GROWTH_EXPAND_CORE,
+  DAI_GROWTH_TRADE_NETWORK,
+  DAI_GROWTH_RAPTURE_PREP,
+  DAI_GROWTH_RAPTURE,
+  DAI_GROWTH_METROPOLIS,
+  DAI_GROWTH_EMERGENCY
+};
 
 enum winning_strategy {
   WIN_OPEN,     /* Still undetermined */
@@ -100,6 +111,24 @@ struct ai_plr
   /* Cache map for AI settlers; defined in daisettler.c. */
   struct ai_settler *settler;
 
+  struct {
+    enum dai_growth_state state;
+    enum dai_growth_state resume_state;
+    int last_transition_turn;
+    int support_city_id;
+    int target_core_cities;
+    int core_cities;
+    int route_slots;
+    int established_routes;
+    int route_coverage_pct;
+    int rapture_eligible;
+    int rapture_ready;
+    int average_core_size;
+    int founder_stalled_turns;
+    int last_city_count;
+    int last_city_growth_turn;
+  } largepox;
+
   /* The units of tech_want seem to be shields */
   adv_want tech_want[A_LAST+1];
 };
@@ -124,5 +153,18 @@ void dai_gov_value(struct ai_type *ait, struct player *pplayer,
                    adv_want *val, bool *override);
 
 void dai_adjust_policies(struct ai_type *ait, struct player *pplayer);
+
+bool dai_largepox_enabled(void);
+void dai_largepox_update(struct ai_type *ait, struct player *pplayer);
+enum dai_growth_state dai_largepox_state(struct ai_type *ait,
+                                         const struct player *pplayer);
+const char *dai_largepox_state_name(enum dai_growth_state state);
+bool dai_largepox_city_is_support(struct ai_type *ait,
+                                  const struct player *pplayer,
+                                  const struct city *pcity);
+bool dai_largepox_growth_focus(struct ai_type *ait,
+                               const struct player *pplayer);
+int dai_largepox_total_city_target(struct ai_type *ait,
+                                   const struct player *pplayer);
 
 #endif /* FC__DAIDATA_H */

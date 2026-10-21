@@ -385,6 +385,24 @@ void create_default_cma_presets(void)
 {
  int i;
  struct cm_parameter parameters[] = {
+   { /* rapture with taxmen */
+     .minimal_surplus = {1, 1, 0, -20, 0, 0},
+     .require_happy = TRUE,
+     .allow_disorder = FALSE,
+     .allow_specialists = TRUE,
+     .factor = {0, 5, 0, 25, 0, 0},
+     .happy_factor = 0,
+     .specialist_output = O_GOLD
+   },
+   { /* rapture with scientists */
+     .minimal_surplus = {1, 1, 0, -20, 0, 0},
+     .require_happy = TRUE,
+     .allow_disorder = FALSE,
+     .allow_specialists = TRUE,
+     .factor = {0, 5, 0, 25, 0, 0},
+     .happy_factor = 0,
+     .specialist_output = O_SCIENCE
+   },
    { /* very happy */
      .minimal_surplus = {0, 0, 0, -20, 0, 0},
      .require_happy = FALSE,
@@ -432,6 +450,8 @@ void create_default_cma_presets(void)
    }
  };
  const char *names[ARRAY_SIZE(parameters)] = {
+   N_("Rapture - Taxmen"),
+   N_("Rapture - Scientists"),
    N_("?cma:Very happy"),
    N_("?cma:Prefer food"),
    N_("?cma:Prefer production"),

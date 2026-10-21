@@ -25,11 +25,14 @@
 #include "city.h"
 #include "game.h"
 #include "government.h"
+#include "improvement.h"
 #include "map.h"
 #include "nation.h"
 #include "packets.h"
 #include "player.h"
 #include "research.h"
+#include "specialist.h"
+#include "tech.h"
 #include "unit.h"
 #include "victory.h"
 
@@ -91,6 +94,145 @@
  * get 'real' rates for the AI player. */
 #define PCT_DELTA_TAX 50
 #define PCT_DELTA_SCI 10
+
+/*************************************************************************//**
+  Test the current temporary rates against the city-manager parameters.
+  Largepox excludes its support city and size-one settlements from the
+  happiness target. Size-two cities and cities temporarily blocked at a
+  growth-building limit still count as ready when the city manager can make
+  them happy with +1 food. They do not rapture yet, but keeping them prepared
+  avoids lowering luxury immediately before they become eligible.
+*****************************************************************************/
+static void dai_evaluate_celebration(struct ai_type *ait,
+                                     struct player *pplayer,
+                                     const struct cm_parameter *cmp,
+                                     bool largepox,
+                                     int *can_celebrate,
+                                     int *total_cities)
+{
+  *can_celebrate = 0;
+  *total_cities = 0;
+
+  city_list_iterate(pplayer->cities, pcity) {
+    struct cm_result *cmr = cm_result_new(pcity);
+    struct ai_city *city_data = def_ai_city_data(pcity, ait);
+    struct cm_parameter city_cmp;
+
+    city_data->celebrate = FALSE;
+    if (largepox
+        && (dai_largepox_city_is_support(ait, pplayer, pcity)
+            || city_size_get(pcity) < 2)) {
+      cm_result_destroy(cmr);
+      continue;
+    }
+
+    cm_copy_parameter(&city_cmp, cmp);
+    if (largepox && city_size_get(pcity) == 2
+        && def_ai_player_data(pplayer, ait)->largepox.route_coverage_pct
+           >= 50) {
+      /* Size two cannot rapture yet.  Merely asking for +1 food can leave a
+       * newly founded city at size two for most of the opening while its
+       * full granary waits for one food per turn.  Keep it happy, but fill
+       * the last part of its granary as fast as its tiles permit; on reaching
+       * size three the normal happy +1-food governor takes over. */
+      city_cmp.max_growth = TRUE;
+    }
+
+    cm_clear_cache(pcity);
+    cm_query_result(pcity, &city_cmp, cmr, FALSE);
+    (*total_cities)++;
+
+    if (cmr->found_a_valid
+        && (largepox ? cmr->surplus[O_FOOD] > 0
+                     : pcity->surplus[O_FOOD] > 0)) {
+      (*can_celebrate)++;
+      /* This flag means "apply the happy +1-food allocation". The game
+       * itself still restricts actual rapture growth to celebratesize and
+       * city_can_grow_to(). Keeping size-two and temporarily capped cities
+       * prepared is intentional. */
+      city_data->celebrate = TRUE;
+    } else if (largepox) {
+      CITY_LOG(LOGLEVEL_TAX, pcity,
+               "largepox celebration check failed at luxury=%d: "
+               "valid=%d food=%d",
+               pplayer->economic.luxury, cmr->found_a_valid,
+               cmr->found_a_valid ? cmr->surplus[O_FOOD] : 0);
+    }
+    cm_result_destroy(cmr);
+  } city_list_iterate_end;
+}
+
+/*************************************************************************//**
+  Apply one previously selected celebration allocation against the tiles
+  which remain after earlier cities in the same empire-wide pass.
+*****************************************************************************/
+static void dai_apply_celebration_city(struct ai_type *ait,
+                                       const struct civ_map *nmap,
+                                       struct city *pcity,
+                                       const struct cm_parameter *cmp)
+{
+  struct cm_result *cmr = cm_result_new(pcity);
+  struct cm_parameter city_cmp;
+
+  log_base(LOGLEVEL_TAX, "setting %s to celebrate", city_name_get(pcity));
+  cm_copy_parameter(&city_cmp, cmp);
+  if (city_size_get(pcity) == 2
+      && def_ai_player_data(city_owner(pcity), ait)
+           ->largepox.route_coverage_pct >= 50) {
+    city_cmp.max_growth = TRUE;
+  }
+  cm_clear_cache(pcity);
+  cm_query_result(pcity, &city_cmp, cmr, FALSE);
+  if (cmr->found_a_valid) {
+    apply_cmresult_to_city(pcity, cmr);
+    city_refresh_from_main_map(nmap, pcity, nullptr);
+    if (!city_happy(pcity) || pcity->surplus[O_FOOD] < 1
+        || pcity->surplus[O_SHIELD] < 1) {
+      CITY_LOG(LOGLEVEL_TAX, pcity,
+               "lost happy +1-food/+1-production state after applying "
+               "governor");
+    }
+  } else {
+    /* Shared city-map tiles may have been claimed earlier in this pass. */
+    def_ai_city_data(pcity, ait)->celebrate = FALSE;
+    CITY_LOG(LOGLEVEL_TAX, pcity,
+             "cannot celebrate after neighbouring assignments");
+  }
+  cm_result_destroy(cmr);
+}
+
+/*************************************************************************//**
+  Release the non-free workers of the largepox core before assigning its
+  celebration layout.  Querying and applying one city at a time otherwise
+  makes the result depend on the old owner of every shared tile: a neighbour
+  can keep a food tile which is merely convenient for it but indispensable
+  to a constrained coastal city.
+
+  Convert every released worker to the default specialist temporarily so the
+  city remains internally sane until its cm_result is applied.  City centres
+  and other free-worked tiles are deliberately left alone.
+*****************************************************************************/
+static void dai_release_celebration_workers(const struct civ_map *nmap,
+                                            struct city **cities,
+                                            int city_count)
+{
+  for (int i = 0; i < city_count; i++) {
+    struct city *pcity = cities[i];
+
+    city_tile_iterate_skip_free_worked(nmap,
+                                       city_map_radius_sq_get(pcity),
+                                       city_tile(pcity), ptile,
+                                       _index, _x, _y) {
+      if (tile_worked(ptile) == pcity) {
+        city_map_update_empty(pcity, ptile);
+        pcity->specialists[DEFAULT_SPECIALIST]++;
+      }
+    } city_tile_iterate_skip_free_worked_end;
+
+    city_refresh_from_main_map(nmap, pcity, nullptr);
+    cm_clear_cache(pcity);
+  }
+}
 
 /*************************************************************************//**
   Handle spaceship related stuff
@@ -172,6 +314,76 @@ enum celebration {
   AI_CELEBRATION_YES,
 };
 
+/************************************************************************//**
+  Whether the first route windfalls have finished capitalizing the core.
+
+  Route-arrival bulbs carry the reference opening through this interval, so
+  ordinary trade should be gold-first until the buildings which compound
+  both luxury/tax and research exist throughout the core.  Switching to
+  science immediately after Harbour left most cities without Stock Exchange,
+  broke their 20% luxury celebration, and spent production on emergency
+  Temples and Colosseums instead of the economic chain.
+****************************************************************************/
+static bool dai_largepox_gold_foundation_ready(struct ai_type *ait,
+                                                const struct player *pplayer)
+{
+  static const char *const capitalization[] = {
+    "Marketplace", "Aqueduct", "Bank", "Harbour",
+    "Stock Exchange", "Library"
+  };
+  int core_cities = 0;
+
+  city_list_iterate(pplayer->cities, pcity) {
+    if (dai_largepox_city_is_support(ait, pplayer, pcity)) {
+      continue;
+    }
+
+    core_cities++;
+    for (size_t i = 0; i < ARRAY_SIZE(capitalization); i++) {
+      const struct impr_type *building
+        = improvement_by_rule_name(capitalization[i]);
+
+      if (building != nullptr && !city_has_building(pcity, building)) {
+        return FALSE;
+      }
+    }
+  } city_list_iterate_end;
+
+  return core_cities > 0;
+}
+
+/************************************************************************//**
+  Whether mature-but-not-yet-capitalized cities need one luxury-rate step
+  above the independent city-manager result.
+
+  The rate search evaluates cities separately, while the real largepox pass
+  must divide overlapping food and trade tiles among the complete dense core.
+  At small sizes that distinction is harmless.  From average size eight on,
+  the nominal minimum can make every isolated query happy yet lose several
+  celebrations after shared tiles are assigned.  Keep a 10-point buffer only
+  until Stock Exchange and Library complete the core's capitalization.
+****************************************************************************/
+static bool dai_largepox_needs_luxury_buffer(struct ai_type *ait,
+                                              const struct player *pplayer)
+{
+  int core_cities = 0;
+  int core_population = 0;
+
+  if (dai_largepox_gold_foundation_ready(ait, pplayer)) {
+    return FALSE;
+  }
+
+  city_list_iterate(pplayer->cities, pcity) {
+    if (!dai_largepox_city_is_support(ait, pplayer, pcity)
+        && city_size_get(pcity) >= 2) {
+      core_cities++;
+      core_population += city_size_get(pcity);
+    }
+  } city_list_iterate_end;
+
+  return core_cities > 0 && core_population >= 8 * core_cities;
+}
+
 #define RATE_NOT_SET -1
 #define RATE_VALID(_rate)                                                    \
   (_rate != RATE_NOT_SET)
@@ -229,7 +441,9 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
   int rate_sci_balance = RATE_NOT_SET;
   int rate_lux_min_celebrate = maxrate;
   int delta_tax = 0, delta_sci = 0;
+  int largepox_science_floor = 0;
   const struct civ_map *nmap = &(wld.map);
+  bool largepox = dai_largepox_enabled();
 
 #ifdef DEBUG_TIMERS
   struct timer *taxtimer = nullptr;
@@ -259,6 +473,20 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
   cmp.allow_specialists = TRUE;
   cmp.factor[O_FOOD] = 20;
   cmp.minimal_surplus[O_GOLD] = -FC_INFINITY;
+  if (largepox) {
+    /* The Warclient governor contract is happiness with +1 food and at least
+     * +1 production. Requiring +2 food made dense coastal cities abandon
+     * their high-trade tiles, and the tax solver then needed 70--90% luxury
+     * where the reference human layout used 20%. Shared tiles are resolved
+     * again in the empire-wide apply pass. */
+    cmp.minimal_surplus[O_FOOD] = 1;
+    cmp.minimal_surplus[O_SHIELD] = 1;
+    cmp.factor[O_FOOD] = 2;
+    cmp.factor[O_SHIELD] = 12;
+    cmp.factor[O_TRADE] = 5;
+    cmp.factor[O_GOLD] = 25;
+    cmp.factor[O_SCIENCE] = 3;
+  }
 
   /* Define reserve (gold/bulbs) needed for rapture (celebration). */
   turns_for_rapture = adv->celebrate ? 0 : (game.info.rapturedelay + 1) * 3;
@@ -451,6 +679,30 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
     rate_sci_min = 0;
   }
 
+  if (largepox) {
+    const struct advance *trade_advance = advance_by_rule_name("Trade");
+    bool trade_known
+      = trade_advance != nullptr
+        && research_invention_state(research, advance_number(trade_advance))
+           == TECH_KNOWN;
+
+    /* Before Trade, research is the only route to the opening accelerator.
+     * Afterwards its one-time bulbs carry research while ordinary trade is
+     * converted into Marketplace/Aqueduct/Bank/Harbour.  Restore the 40%
+     * strategic floor only when that gold foundation is complete, so the
+     * mature empire still reaches Engineers, Railroad and Farmland. */
+    largepox_science_floor
+      = trade_known && !dai_largepox_gold_foundation_ready(ait, pplayer)
+        ? 0 : MIN(maxrate, 40);
+
+    /* Warclient's gold-first governor turns citizens left after securing
+     * happiness and +1 food into tax collectors.  Once the economic
+     * foundation is complete and research resumes, scientists are again the
+     * useful fallback. */
+    cmp.specialist_output
+      = largepox_science_floor == 0 ? O_GOLD : O_SCIENCE;
+  }
+
   /* === Luxury === */
 
   /* Should (and can) we celebrate? */
@@ -465,52 +717,100 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
 
     /* Set the minimum tax for a positive science and gold balance and use the
      * remaining trade goods for luxuries (max. luxuries). */
-    rates[AI_RATE_SCI] = rate_sci_min;
-    rates[AI_RATE_TAX] = rate_tax_min;
-    rates[AI_RATE_LUX] = 0;
+    if (largepox) {
+      /* Find the lowest luxury rate at which every eligible core city can
+       * celebrate.  Stopping at a merely successful majority makes a
+       * largepox empire gain only a few citizens per turn and fall far behind
+       * a human who keeps the complete core in rapture.  If terrain or a
+       * missing growth building makes unanimity impossible, retain the best
+       * available subset instead of turning rapture off for everybody. */
+      int best_can_celebrate = 0;
+      int best_luxury = -1;
 
-    rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
-                                      + RATE_REMAINS(rates));
-    rates[AI_RATE_TAX] = MIN(maxrate, rates[AI_RATE_TAX]
-                                      + RATE_REMAINS(rates));
-    rates[AI_RATE_SCI] = MIN(maxrate, rates[AI_RATE_SCI]
-                                      + RATE_REMAINS(rates));
+      for (int lux = 0; lux <= maxrate; lux += 10) {
+        rates[AI_RATE_SCI] = MAX(rate_sci_min, largepox_science_floor);
+        rates[AI_RATE_LUX] = lux;
+        rates[AI_RATE_TAX]
+          = MIN(maxrate, 100 - rates[AI_RATE_SCI] - rates[AI_RATE_LUX]);
 
-    /* Temporary set the new rates. */
-    pplayer->economic.luxury = rates[AI_RATE_LUX];
-    pplayer->economic.tax = rates[AI_RATE_TAX];
-    pplayer->economic.science = rates[AI_RATE_SCI];
+        if (rates[AI_RATE_TAX] < rate_tax_min) {
+          continue;
+        }
+        rates[AI_RATE_SCI]
+          = MIN(maxrate, rates[AI_RATE_SCI] + RATE_REMAINS(rates));
+        if (RATE_REMAINS(rates) != 0) {
+          continue;
+        }
 
-    /* Check if we celebrate - the city state must be restored at the end! */
-    city_list_iterate(pplayer->cities, pcity) {
-      struct cm_result *cmr = cm_result_new(pcity);
-      struct ai_city *city_data = def_ai_city_data(pcity, ait);
+        pplayer->economic.luxury = rates[AI_RATE_LUX];
+        pplayer->economic.tax = rates[AI_RATE_TAX];
+        pplayer->economic.science = rates[AI_RATE_SCI];
+        dai_evaluate_celebration(ait, pplayer, &cmp, TRUE,
+                                 &can_celebrate, &total_cities);
 
-      cm_clear_cache(pcity);
-      cm_query_result(pcity, &cmp, cmr, FALSE); /* burn some CPU */
-
-      total_cities++;
-
-      if (cmr->found_a_valid
-          && pcity->surplus[O_FOOD] > 0
-          && city_size_get(pcity) >= game.info.celebratesize
-          && city_can_grow_to(pcity, city_size_get(pcity) + 1)) {
-        city_data->celebrate = TRUE;
-        can_celebrate++;
-      } else {
-        city_data->celebrate = FALSE;
+        if (can_celebrate > best_can_celebrate) {
+          best_can_celebrate = can_celebrate;
+          best_luxury = lux;
+        }
+        if (total_cities > 0 && can_celebrate == total_cities) {
+          best_luxury = lux;
+          if (dai_largepox_needs_luxury_buffer(ait, pplayer)) {
+            best_luxury = MIN(maxrate, best_luxury + 10);
+          }
+          break;
+        }
       }
-      cm_result_destroy(cmr);
-    } city_list_iterate_end;
 
-    /* If more than half our cities can celebrate, go for it! */
-    if (can_celebrate * 2 > total_cities) {
-      celebrate = AI_CELEBRATION_YES;
-      rate_lux_min_celebrate = pplayer->economic.luxury;
+      if (best_luxury >= 0) {
+        rates[AI_RATE_SCI] = MAX(rate_sci_min, largepox_science_floor);
+        rates[AI_RATE_LUX] = best_luxury;
+        rates[AI_RATE_TAX]
+          = MAX(0, MIN(maxrate,
+                       100 - rates[AI_RATE_SCI] - rates[AI_RATE_LUX]));
+        rates[AI_RATE_SCI]
+          = MIN(maxrate, rates[AI_RATE_SCI] + RATE_REMAINS(rates));
+
+        pplayer->economic.luxury = rates[AI_RATE_LUX];
+        pplayer->economic.tax = rates[AI_RATE_TAX];
+        pplayer->economic.science = rates[AI_RATE_SCI];
+        dai_evaluate_celebration(ait, pplayer, &cmp, TRUE,
+                                 &can_celebrate, &total_cities);
+        celebrate = AI_CELEBRATION_YES;
+        rate_lux_min_celebrate = best_luxury;
+      }
+    } else {
+      rates[AI_RATE_SCI] = rate_sci_min;
+      rates[AI_RATE_TAX] = rate_tax_min;
+      rates[AI_RATE_LUX] = 0;
+
+      rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
+                                        + RATE_REMAINS(rates));
+      rates[AI_RATE_TAX] = MIN(maxrate, rates[AI_RATE_TAX]
+                                        + RATE_REMAINS(rates));
+      rates[AI_RATE_SCI] = MIN(maxrate, rates[AI_RATE_SCI]
+                                        + RATE_REMAINS(rates));
+
+      pplayer->economic.luxury = rates[AI_RATE_LUX];
+      pplayer->economic.tax = rates[AI_RATE_TAX];
+      pplayer->economic.science = rates[AI_RATE_SCI];
+      dai_evaluate_celebration(ait, pplayer, &cmp, FALSE,
+                               &can_celebrate, &total_cities);
+      if (can_celebrate * 2 > total_cities) {
+        celebrate = AI_CELEBRATION_YES;
+        rate_lux_min_celebrate = pplayer->economic.luxury;
+      }
+    }
+
+    if (celebrate == AI_CELEBRATION_YES) {
       log_base(LOGLEVEL_TAX, "%s [lux] celebration possible (Sci/Lux/Tax)>="
                              "%d/%d/%d (%d of %d cities)",
                player_name(pplayer), rate_sci_min, rate_lux_min_celebrate,
                rate_tax_min, can_celebrate, total_cities);
+      if (largepox) {
+        log_verbose("%s largepox rapture target: luxury=%d, core-ready=%d/%d",
+                    player_name(pplayer), rate_lux_min_celebrate,
+                    can_celebrate, total_cities);
+      }
     } else {
       log_base(LOGLEVEL_TAX, "%s [lux] no celebration: only %d of %d cities",
                player_name(pplayer), can_celebrate, total_cities);
@@ -531,9 +831,13 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
 
   /* Now decide that to do ... */
   if (celebrate == AI_CELEBRATION_YES
-      && rate_tax_min + rate_sci_min + rate_lux_min_celebrate <= 100) {
+      && rate_tax_min
+         + (largepox ? MAX(rate_sci_min, largepox_science_floor)
+                     : rate_sci_min)
+         + rate_lux_min_celebrate <= 100) {
     /* Celebration! */
-    rates[AI_RATE_SCI] = rate_sci_min;
+    rates[AI_RATE_SCI]
+      = largepox ? MAX(rate_sci_min, largepox_science_floor) : rate_sci_min;
     rates[AI_RATE_TAX] = rate_tax_min;
     rates[AI_RATE_LUX] = rate_lux_min_celebrate;
 
@@ -610,7 +914,21 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
   }
 
   /* Put the remaining to tax or science. */
-  if (!adv_wants_science(pplayer)) {
+  if (largepox && largepox_science_floor == 0) {
+    rates[AI_RATE_TAX] = MIN(maxrate, rates[AI_RATE_TAX]
+                                      + RATE_REMAINS(rates));
+    rates[AI_RATE_SCI] = MIN(maxrate, rates[AI_RATE_SCI]
+                                      + RATE_REMAINS(rates));
+    rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
+                                      + RATE_REMAINS(rates));
+  } else if (dai_largepox_growth_focus(ait, pplayer)) {
+    rates[AI_RATE_TAX] = MIN(maxrate, rates[AI_RATE_TAX]
+                                      + RATE_REMAINS(rates));
+    rates[AI_RATE_SCI] = MIN(maxrate, rates[AI_RATE_SCI]
+                                      + RATE_REMAINS(rates));
+    rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
+                                      + RATE_REMAINS(rates));
+  } else if (!adv_wants_science(pplayer)) {
     rates[AI_RATE_TAX] = MIN(maxrate, rates[AI_RATE_TAX]
                                       + RATE_REMAINS(rates));
     rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
@@ -631,6 +949,39 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
                                       + RATE_REMAINS(rates));
     rates[AI_RATE_LUX] = MIN(maxrate, rates[AI_RATE_LUX]
                                       + RATE_REMAINS(rates));
+  }
+
+  /* A failed celebration query must not silently put largepox back at zero
+   * science. Preserve the chosen luxury rate where possible and finance the
+   * strategic research floor from tax first. */
+  if (largepox && rates[AI_RATE_SCI] < largepox_science_floor) {
+    int missing = largepox_science_floor - rates[AI_RATE_SCI];
+    int shifted = MIN(missing, rates[AI_RATE_TAX]);
+
+    rates[AI_RATE_TAX] -= shifted;
+    rates[AI_RATE_SCI] += shifted;
+    missing -= shifted;
+
+    shifted = MIN(missing, rates[AI_RATE_LUX]);
+    rates[AI_RATE_LUX] -= shifted;
+    rates[AI_RATE_SCI] += shifted;
+  }
+
+  if (largepox) {
+    const struct advance *trade_advance = advance_by_rule_name("Trade");
+
+    if (trade_advance != nullptr
+        && research_invention_state(research, advance_number(trade_advance))
+           != TECH_KNOWN) {
+      /* The measured human opening had its first Caravan moving on turn 39,
+       * while the generic tax solver left the AI one strategic technology
+       * and roughly six caravan turns behind.  Before Trade exists there is
+       * nothing worth celebrating and very little to rush-buy, so use the
+       * full legal science rate and keep the remainder as seed gold. */
+      rates[AI_RATE_SCI] = maxrate;
+      rates[AI_RATE_LUX] = 0;
+      rates[AI_RATE_TAX] = 100 - maxrate;
+    }
   }
 
   /* Check and set the calculated rates. */
@@ -660,24 +1011,53 @@ static void dai_manage_taxes(struct ai_type *ait, struct player *pplayer)
     /* We do celebrate! */
     adv->celebrate = TRUE;
 
-    city_list_iterate(pplayer->cities, pcity) {
-      struct cm_result *cmr = cm_result_new(pcity);
+    if (largepox) {
+      int city_count = city_list_size(pplayer->cities);
+      int selected = 0;
+      struct city *ordered[city_count + 1];
 
-      if (def_ai_city_data(pcity, ait)->celebrate) {
-        log_base(LOGLEVEL_TAX, "setting %s to celebrate", city_name_get(pcity));
-        cm_query_result(pcity, &cmp, cmr, FALSE);
-        if (cmr->found_a_valid) {
-          apply_cmresult_to_city(pcity, cmr);
-          city_refresh_from_main_map(nmap, pcity, nullptr);
-          if (!city_happy(pcity)) {
-            CITY_LOG(LOG_ERROR, pcity, "is NOT happy when it should be!");
+      city_list_iterate(pplayer->cities, pcity) {
+        /* Reconsider the complete eligible core after releasing its shared
+         * tiles.  A city whose independent query failed only because a
+         * neighbour held its food must not be omitted from the global pass. */
+        if (!dai_largepox_city_is_support(ait, pplayer, pcity)
+            && city_size_get(pcity) >= 2) {
+          ordered[selected++] = pcity;
+        }
+      } city_list_iterate_end;
+
+      /* Give scarce shared food tiles to the least flexible cities first.
+       * Large cities normally need more worked tiles; lower current food is
+       * the tie-breaker. Flexible smaller neighbours are then re-solved
+       * against what remains instead of permanently starving late cities in
+       * list order. */
+      for (int i = 0; i < selected; i++) {
+        for (int j = i + 1; j < selected; j++) {
+          if (city_size_get(ordered[j]) > city_size_get(ordered[i])
+              || (city_size_get(ordered[j]) == city_size_get(ordered[i])
+                  && ordered[j]->surplus[O_FOOD]
+                     < ordered[i]->surplus[O_FOOD])) {
+            struct city *swap = ordered[i];
+
+            ordered[i] = ordered[j];
+            ordered[j] = swap;
           }
-        } else {
-          CITY_LOG(LOG_ERROR, pcity, "has NO valid state!");
         }
       }
-      cm_result_destroy(cmr);
-    } city_list_iterate_end;
+
+      dai_release_celebration_workers(nmap, ordered, selected);
+
+      for (int i = 0; i < selected; i++) {
+        dai_apply_celebration_city(ait, nmap, ordered[i], &cmp);
+      }
+
+    } else {
+      city_list_iterate(pplayer->cities, pcity) {
+        if (def_ai_city_data(pcity, ait)->celebrate) {
+          dai_apply_celebration_city(ait, nmap, pcity, &cmp);
+        }
+      } city_list_iterate_end;
+    }
   } else if (celebrate == AI_CELEBRATION_NO) {
     city_list_iterate(pplayer->cities, pcity) {
       /* KLUDGE: Must refresh to restore the original values which
@@ -709,6 +1089,29 @@ static void dai_manage_government(struct ai_type *ait, struct player *pplayer)
   struct adv_data *adv = adv_data_get(pplayer, nullptr);
 
   if (!pplayer->is_alive || has_handicap(pplayer, H_AWAY)) {
+    return;
+  }
+
+  if (dai_largepox_enabled()) {
+    struct government *republic = government_by_rule_name("Republic");
+    struct government *democracy = government_by_rule_name("Democracy");
+    struct government *target = nullptr;
+
+    /* The largepox research milestones deliberately unlock the first
+     * rapture government and then its mature replacement. Do not let the
+     * generic short-term government valuation switch this strategy back to
+     * a non-celebrating government. */
+    if (democracy != nullptr
+        && can_change_to_government(pplayer, democracy)) {
+      target = democracy;
+    } else if (republic != nullptr
+               && can_change_to_government(pplayer, republic)) {
+      target = republic;
+    }
+
+    if (target != nullptr && target != government_of_player(pplayer)) {
+      dai_government_change(pplayer, target);
+    }
     return;
   }
 
@@ -778,9 +1181,11 @@ void dai_do_last_activities(struct ai_type *ait, struct player *pplayer)
 
   dai_manage_government(ait, pplayer);
   dai_adjust_policies(ait, pplayer);
+  dai_largepox_update(ait, pplayer);
   TIMING_LOG(AIT_TAXES, TIMER_START);
   dai_manage_taxes(ait, pplayer);
   TIMING_LOG(AIT_TAXES, TIMER_STOP);
+  dai_largepox_update(ait, pplayer);
   TIMING_LOG(AIT_CITIES, TIMER_START);
   dai_manage_cities(ait, pplayer);
   TIMING_LOG(AIT_CITIES, TIMER_STOP);

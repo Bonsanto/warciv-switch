@@ -199,6 +199,10 @@ const char *terrain_flag_helptxt(enum terrain_flag_id id);
 
 bool terrain_has_resource(const struct terrain *pterrain,
                           const struct extra_type *presource);
+struct extra_type *
+terrain_resource_for_terrain_change(const struct terrain *old_terrain,
+                                    const struct terrain *new_terrain,
+                                    struct extra_type *old_resource);
 
 /* Functions to operate on a general terrain type. */
 bool is_terrain_card_near(const struct civ_map *nmap,

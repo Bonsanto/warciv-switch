@@ -91,11 +91,19 @@
 static bool dai_find_boat_for_unit(struct ai_type *ait, struct unit *punit);
 static bool dai_caravan_can_trade_cities_diff_cont(struct player *pplayer,
                                                    struct unit *punit);
+static const struct city *
+dai_largepox_internal_trade_destination(struct ai_type *ait,
+                                        struct player *pplayer,
+                                        struct unit *punit,
+                                        const struct city *homecity);
 static void dai_manage_caravan(struct ai_type *ait, struct player *pplayer,
                                struct unit *punit);
 static void dai_manage_barbarian_leader(struct ai_type *ait,
                                         struct player *pplayer,
                                         struct unit *leader);
+static bool dai_largepox_retire_explorer(struct ai_type *ait,
+                                         struct player *pplayer,
+                                         struct unit *punit);
 
 static void dai_military_findjob(struct ai_type *ait, const struct civ_map *nmap,
                                  struct player *pplayer, struct unit *punit);
@@ -107,6 +115,82 @@ static void dai_military_attack(struct ai_type *ait, struct player *pplayer,
 static bool unit_role_defender(const struct unit_type *punittype);
 static int unit_def_rating_squared(const struct unit *punit,
                                    const struct unit *pdef);
+
+/**********************************************************************//**
+  Once the largepox core covers the home island, turn the initial explorers
+  back into production instead of paying their upkeep for the rest of the
+  game. Human largepox play normally does this as soon as the first ring of
+  cities has revealed the useful land.
+
+  Returns TRUE when normal unit management must stop, whether the explorer
+  was recovered or is still travelling to the nearest own city.
+**************************************************************************/
+static bool dai_largepox_retire_explorer(struct ai_type *ait,
+                                         struct player *pplayer,
+                                         struct unit *punit)
+{
+  struct city *retire = nullptr;
+  struct city *here = tile_city(unit_tile(punit));
+  int best_distance = FC_INFINITY;
+  int unit_id = punit->id;
+  const struct civ_map *nmap = &(wld.map);
+
+  if (!dai_largepox_enabled()
+      || !unit_has_type_role(punit, L_EXPLORER)
+      || city_list_size(pplayer->cities) < 6) {
+    return FALSE;
+  }
+
+  if (here != nullptr && city_owner(here) == pplayer) {
+    retire = here;
+  } else {
+    city_list_iterate(pplayer->cities, pcity) {
+      int distance;
+
+      /* Do not start a naval expedition merely to recycle an explorer. */
+      if (tile_continent(pcity->tile) != tile_continent(unit_tile(punit))) {
+        continue;
+      }
+
+      distance = real_map_distance(unit_tile(punit), pcity->tile);
+      if (distance < best_distance) {
+        best_distance = distance;
+        retire = pcity;
+      }
+    } city_list_iterate_end;
+  }
+
+  if (retire == nullptr) {
+    return FALSE;
+  }
+
+  if (here != retire) {
+    UNIT_LOG(LOG_DEBUG, punit, "retiring at %s for largepox production",
+             city_name_get(retire));
+    if (!dai_unit_goto(ait, punit, retire->tile)) {
+      return TRUE;
+    }
+    if ((punit = game_unit_by_number(unit_id)) == nullptr
+        || unit_tile(punit) != retire->tile) {
+      return TRUE;
+    }
+  }
+
+  if (is_action_enabled_unit_on_city(nmap, ACTION_DISBAND_UNIT_RECOVER,
+                                     punit, retire)) {
+    unit_perform_action(pplayer, punit->id, retire->id, 0, nullptr,
+                        ACTION_DISBAND_UNIT_RECOVER, ACT_REQ_PLAYER);
+  } else if (is_action_enabled_unit_on_self(nmap, ACTION_DISBAND_UNIT,
+                                            punit)) {
+    unit_perform_action(pplayer, punit->id, punit->id, 0, nullptr,
+                        ACTION_DISBAND_UNIT, ACT_REQ_PLAYER);
+  } else {
+    /* This ruleset has no way to recycle the unit; keep exploring. */
+    return FALSE;
+  }
+
+  return TRUE;
+}
 
 /*
  * Cached values. Updated by update_simple_ai_types.
@@ -2334,6 +2418,136 @@ static bool search_homecity_for_caravan(struct ai_type *ait, struct unit *punit)
 }
 
 /**********************************************************************//**
+  Count route endpoints already reserved by caravans travelling between
+  cities. The generic caravan optimizer deliberately ignores other caravans
+  in transit, which makes a burst of largepox caravans select the same full
+  endpoint and merely replace routes instead of completing the network.
+**************************************************************************/
+static int dai_largepox_reserved_route_slots(struct ai_type *ait,
+                                             struct player *pplayer,
+                                             const struct city *pcity,
+                                             const struct unit *exclude)
+{
+  int reserved = 0;
+
+  unit_list_iterate(pplayer->units, other) {
+    struct unit_ai *other_data;
+    struct city *other_home;
+    struct city *other_dest;
+
+    if (other == exclude || !unit_can_do_action(other, ACTION_TRADE_ROUTE)) {
+      continue;
+    }
+
+    other_data = def_ai_unit_data(other, ait);
+    if (other_data->task != AIUNIT_TRADE || other->goto_tile == nullptr) {
+      continue;
+    }
+
+    other_home = game_city_by_number(other->homecity);
+    other_dest = tile_city(other->goto_tile);
+    if (other_home == pcity || other_dest == pcity) {
+      reserved++;
+    }
+  } unit_list_iterate_end;
+
+  return reserved;
+}
+
+/**********************************************************************//**
+  Choose an internal largepox route whose two endpoints both still have a
+  free (and unreserved) slot. Prefer the least-filled destination, then the
+  largest immediate Warclient windfall and strongest recurring route. This
+  turns every successful caravan into two newly occupied endpoints until the
+  island network is complete while financing the next building wave.
+**************************************************************************/
+static const struct city *
+dai_largepox_internal_trade_destination(struct ai_type *ait,
+                                        struct player *pplayer,
+                                        struct unit *punit,
+                                        const struct city *homecity)
+{
+  const struct city *best = nullptr;
+  struct goods_type *pgood;
+  int home_used;
+  int best_score = -FC_INFINITY;
+
+  if (!dai_largepox_enabled() || homecity == nullptr
+      || city_owner(homecity) != pplayer) {
+    return nullptr;
+  }
+
+  home_used = city_num_trade_routes(homecity)
+              + dai_largepox_reserved_route_slots(ait, pplayer, homecity,
+                                                   punit);
+  if (home_used >= max_trade_routes(homecity)) {
+    return nullptr;
+  }
+
+  pgood = unit_current_goods(punit, homecity);
+  city_list_iterate(pplayer->cities, dest) {
+    int dest_used;
+    int windfall;
+    int score;
+    bool pair_reserved = FALSE;
+
+    if (dest == homecity
+        || tile_continent(dest->tile) != tile_continent(homecity->tile)
+        || !can_cities_trade(homecity, dest)
+        || !can_establish_trade_route(homecity, dest,
+                                      pgood->replace_priority)) {
+      continue;
+    }
+
+    unit_list_iterate(pplayer->units, other) {
+      struct unit_ai *other_data;
+      struct city *other_home;
+      struct city *other_dest;
+
+      if (other == punit
+          || !unit_can_do_action(other, ACTION_TRADE_ROUTE)) {
+        continue;
+      }
+      other_data = def_ai_unit_data(other, ait);
+      if (other_data->task != AIUNIT_TRADE || other->goto_tile == nullptr) {
+        continue;
+      }
+      other_home = game_city_by_number(other->homecity);
+      other_dest = tile_city(other->goto_tile);
+      if ((other_home == homecity && other_dest == dest)
+          || (other_home == dest && other_dest == homecity)) {
+        pair_reserved = TRUE;
+        break;
+      }
+    } unit_list_iterate_end;
+    if (pair_reserved) {
+      continue;
+    }
+
+    dest_used = city_num_trade_routes(dest)
+                + dai_largepox_reserved_route_slots(ait, pplayer, dest,
+                                                     punit);
+    if (dest_used >= max_trade_routes(dest)) {
+      continue;
+    }
+
+    windfall = get_caravan_enter_city_trade_bonus(homecity, dest,
+                                                   unit_type_get(punit),
+                                                   pgood, TRUE);
+    score = (max_trade_routes(dest) - dest_used) * 1000000
+            + windfall * 1000
+            + trade_base_between_cities(homecity, dest) * 100
+            - map_distance(homecity->tile, dest->tile);
+    if (score > best_score) {
+      best_score = score;
+      best = dest;
+    }
+  } city_list_iterate_end;
+
+  return best;
+}
+
+/**********************************************************************//**
   Use caravans for building wonders, or send caravans to establish
   trade with a city, owned by yourself or an ally.
 
@@ -2448,6 +2662,22 @@ static void dai_manage_caravan(struct ai_type *ait, struct player *pplayer,
     }
 
     caravan_parameter_init_from_unit(&parameter, punit);
+    if (dai_largepox_enabled()) {
+      dest = dai_largepox_internal_trade_destination(ait, pplayer, punit,
+                                                      homecity);
+      if (dest != nullptr) {
+        required_boat = FALSE;
+        request_boat = FALSE;
+        dai_unit_new_task(ait, punit, AIUNIT_TRADE, dest->tile);
+      }
+    }
+
+    if (dest != nullptr) {
+      dai_caravan_goto(ait, pplayer, punit, dest, FALSE,
+                       required_boat, request_boat);
+      return;
+    }
+
     /* Make more trade with allies than other peaceful nations
      * by considering only allies 50% of the time.
      * (the other 50% allies are still considered, but so are other nations) */
@@ -2780,6 +3010,10 @@ void dai_manage_unit(struct ai_type *ait, struct player *pplayer,
   is_ferry = dai_is_ferry(punit, ait);
 
   ptype = unit_type_get(punit);
+
+  if (dai_largepox_retire_explorer(ait, pplayer, punit)) {
+    return;
+  }
 
   if (utype_has_flag(ptype, UTYF_DIPLOMAT)) {
     TIMING_LOG(AIT_DIPLOMAT, TIMER_START);

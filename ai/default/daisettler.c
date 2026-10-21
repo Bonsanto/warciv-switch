@@ -25,6 +25,7 @@
 #include "timing.h"
 
 /* common */
+#include "actions.h"
 #include "city.h"
 #include "game.h"
 #include "government.h"
@@ -93,6 +94,11 @@
  * This is a big WAG to save a big amount of CPU. */
 #define RESULT_IS_ENOUGH 250
 
+/* Largepox depends on completing a compact core quickly.  A nearby good site
+ * is strategically better than a slightly richer site reached many turns
+ * later, because every early city contributes settlers, trade and research. */
+#define LARGEPOX_RESULT_IS_ENOUGH 500
+
 #define FERRY_TECH_WANT 500
 
 #define GROWTH_PRIORITY 15
@@ -103,13 +109,43 @@
  * are hard to find. Lower means more perfection. */
 #define PERFECTION 3
 
+/* Amortize long settler journeys aggressively.  The human Warclient pattern
+ * completes its interlocking core before the government/trade transition. */
+#define LARGEPOX_PERFECTION PERFECTION
+
 /* How much to deemphasise the potential for city growth for city
  * placements. Decrease this value if large cities are important
  * or planned. Increase if running strict smallpox. */
 #define GROWTH_POTENTIAL_DEEMPHASIS 8
 
+/* A largepox city is expected to grow through most of its workable radius,
+ * so future tiles matter much more than they do to the smallpox evaluator. */
+#define LARGEPOX_GROWTH_POTENTIAL_DEEMPHASIS 2
+
+/* The ordinary yield calculation already assigns no value to tiles reserved
+ * by another city.  An additional overlap divisor made the intended
+ * interlocking largepox layout reject useful coastal gaps twice, so leave
+ * spacing to that native opportunity cost. */
+#define LARGEPOX_OVERLAP_PENALTY 0
+
+/* Largepox trade routes require same-owner cities to be at least
+ * trademindist apart.  Reward placements that add edges to the intended
+ * four-route graph, especially for existing cities which still have fewer
+ * than four geometrically valid partners. */
+#define LARGEPOX_TRADE_GRAPH_NEED_BONUS 8
+#define LARGEPOX_TRADE_PARTNER_BONUS 5
+#define LARGEPOX_NO_TRADE_PARTNER_PCT 55
+#define LARGEPOX_TRADE_DEGREE 4
+
 /* Percentage bonus to city locations near an ocean. */
 #define NAVAL_EMPHASIS 20
+
+/* Largepox wants productive coastal cities with enough independent tiles to
+ * grow and rapture.  A distance of three leaves two complete map tiles
+ * between city centers; this is deliberately stricter than a ruleset using
+ * citymindist 2, but applies only to the optional largepox AI policy. */
+#define LARGEPOX_CITYMINDIST 3
+#define LARGEPOX_NAVAL_EMPHASIS 75
 
 /* Modifier for defense bonus that is applied to city location want.
  * This is % of defense % to increase want by. */
@@ -175,6 +211,9 @@ struct cityresult {
   } best_other;
 
   adv_want remaining;             /* Value of all other tiles */
+  int crowdedness;                /* Sum of existing-radius overlaps */
+  int trade_partners;             /* Existing cities at trademindist */
+  int trade_graph_need;            /* Missing graph degree served here */
 
   /* Save the result for print_citymap(). */
   struct tile_data_cache_hash *tdc_hash;
@@ -285,6 +324,10 @@ static struct cityresult *cityresult_fill(struct ai_type *ait,
   struct adv_data *adv = adv_data_get(pplayer, NULL);
   struct cityresult *result;
   const struct civ_map *nmap = &(wld.map);
+  const int growth_deemphasis
+    = dai_largepox_enabled()
+      ? LARGEPOX_GROWTH_POTENTIAL_DEEMPHASIS
+      : GROWTH_POTENTIAL_DEEMPHASIS;
 
   fc_assert_ret_val(adv != NULL, NULL);
   fc_assert_ret_val(center != NULL, NULL);
@@ -293,6 +336,26 @@ static struct cityresult *cityresult_fill(struct ai_type *ait,
 
   /* Create a city result and set default values. */
   result = cityresult_new(center);
+
+  if (dai_largepox_enabled()) {
+    city_list_iterate(pplayer->cities, acity) {
+      if (map_distance(center, city_tile(acity)) >= game.info.trademindist) {
+        int existing_partners = 0;
+
+        city_list_iterate(pplayer->cities, other) {
+          if (other != acity
+              && map_distance(city_tile(acity), city_tile(other))
+                 >= game.info.trademindist) {
+            existing_partners++;
+          }
+        } city_list_iterate_end;
+
+        result->trade_partners++;
+        result->trade_graph_need
+          += MAX(1, LARGEPOX_TRADE_DEGREE - existing_partners);
+      }
+    } city_list_iterate_end;
+  }
 
   if (pcity == NULL) {
     pcity = create_city_virtual(pplayer, result->tile, "Virtuaville");
@@ -311,6 +374,15 @@ static struct cityresult *cityresult_fill(struct ai_type *ait,
     int reserved = citymap_read(ptile);
     bool city_center = (result->tile == ptile); /* is_city_center() */
     struct tile_data_cache *ptdc;
+
+    if (reserved > 0) {
+      result->crowdedness += reserved;
+    } else if (reserved < 0 && !city_center) {
+      /* A worked/reserved tile is unavailable and therefore at least as
+       * significant as one ordinary overlap.  Do not use the negative ID
+       * itself as a magnitude. */
+      result->crowdedness++;
+    }
 
     if (reserved < 0
         || (handicap && !map_is_known(ptile, pplayer))
@@ -377,7 +449,7 @@ static struct cityresult *cityresult_fill(struct ai_type *ait,
       /* First add other other to remaining, unless it's unavailable (value < 0) tile. */
       if (result->best_other.tdc->sum > 0) {
         result->remaining += result->best_other.tdc->sum
-                             / GROWTH_POTENTIAL_DEEMPHASIS;
+                             / growth_deemphasis;
       }
       /* Then make new best other */
       result->best_other.tdc = ptdc;
@@ -388,7 +460,7 @@ static struct cityresult *cityresult_fill(struct ai_type *ait,
        * of the area and the emphasis placed on space for growth.
        * Do not add unavailable (value < 0) tiles. */
       if (ptdc->sum > 0) {
-        result->remaining += ptdc->sum / GROWTH_POTENTIAL_DEEMPHASIS;
+        result->remaining += ptdc->sum / growth_deemphasis;
       }
     }
 
@@ -626,13 +698,47 @@ static adv_want naval_bonus(const struct cityresult *result)
 {
   bool ocean_adjacent = is_terrain_class_near_tile(&(wld.map),
                                                    result->tile, TC_OCEAN);
+  int emphasis = dai_largepox_enabled()
+                 ? LARGEPOX_NAVAL_EMPHASIS : NAVAL_EMPHASIS;
 
   /* Adjust for ocean adjacency, which is nice */
   if (ocean_adjacent) {
-    return (result->total * NAVAL_EMPHASIS) / 100;
+    return (result->total * emphasis) / 100;
   } else {
     return 0;
   }
+}
+
+/*************************************************************************//**
+  Return whether a largepox site leaves two tiles between friendly centers.
+
+  Include destinations already reserved by mobile founders.  The ordinary
+  citymap check only guarantees the server's citymindist and can therefore
+  dispatch several founders to a layout which is legal but too tightly
+  packed for large cities.
+*****************************************************************************/
+static bool dai_largepox_city_spacing_ok(const struct player *pplayer,
+                                         const struct unit *punit,
+                                         const struct tile *ptile)
+{
+  city_list_iterate(pplayer->cities, pcity) {
+    if (real_map_distance(ptile, city_tile(pcity)) < LARGEPOX_CITYMINDIST) {
+      return FALSE;
+    }
+  } city_list_iterate_end;
+
+  unit_list_iterate(pplayer->units, other) {
+    if (other != punit
+        && unit_is_cityfounder(other)
+        && other->server.adv->task == AUT_BUILD_CITY
+        && other->goto_tile != nullptr
+        && real_map_distance(ptile, other->goto_tile)
+           < LARGEPOX_CITYMINDIST) {
+      return FALSE;
+    }
+  } unit_list_iterate_end;
+
+  return TRUE;
 }
 
 /*************************************************************************//**
@@ -726,6 +832,11 @@ struct cityresult *city_desirability(struct ai_type *ait, struct player *pplayer
     return NULL;
   }
 
+  if (dai_largepox_enabled()
+      && !dai_largepox_city_spacing_ok(pplayer, punit, ptile)) {
+    return NULL;
+  }
+
   /* Check if another settler has taken a spot within mindist */
   square_iterate(&(wld.map), ptile, game.info.citymindist-1, tile1) {
     if (citymap_is_reserved(tile1)) {
@@ -771,6 +882,29 @@ struct cityresult *city_desirability(struct ai_type *ait, struct player *pplayer
   /* Add remaining points, which is our potential */
   cr->total += cr->remaining;
 
+  if (dai_largepox_enabled() && cr->crowdedness > 0) {
+    /* Prefer layouts which leave each permanent city a useful full radius.
+     * Keep this multiplicative and soft so an exceptional food/trade site
+     * can still justify some overlap. */
+    cr->total *= 100.0f
+                 / (100.0f
+                    + LARGEPOX_OVERLAP_PENALTY * cr->crowdedness);
+  }
+
+  if (dai_largepox_enabled() && city_list_size(pplayer->cities) > 0) {
+    if (cr->trade_partners == 0) {
+      /* A rich but isolated infill city cannot participate in the internal
+       * route engine which funds Republic/Democracy and rapture. */
+      cr->total *= LARGEPOX_NO_TRADE_PARTNER_PCT / 100.0f;
+    } else {
+      cr->total
+        *= (100.0f
+            + LARGEPOX_TRADE_GRAPH_NEED_BONUS * cr->trade_graph_need
+            + LARGEPOX_TRADE_PARTNER_BONUS
+              * MIN(LARGEPOX_TRADE_DEGREE, cr->trade_partners)) / 100.0f;
+    }
+  }
+
   fc_assert_ret_val(cr->total >= 0, NULL); /* Does not free cr! */
 
   return cr;
@@ -799,6 +933,11 @@ static struct cityresult *settler_map_iterate(struct ai_type *ait,
   struct unit_class *pclass = unit_class_get(punit);
   Continent_id curcont = tile_continent(unit_tile(punit));
   int cost = unit_build_shield_cost_base(punit);
+  const int perfection = dai_largepox_enabled()
+                         ? LARGEPOX_PERFECTION : PERFECTION;
+  const adv_want result_is_enough = dai_largepox_enabled()
+                                    ? LARGEPOX_RESULT_IS_ENOUGH
+                                    : RESULT_IS_ENOUGH;
 
   pfm = pf_map_new(parameter);
   pf_map_move_costs_iterate(pfm, ptile, move_cost, FALSE) {
@@ -831,7 +970,7 @@ static struct cityresult *settler_map_iterate(struct ai_type *ait,
 
     /* This algorithm punishes long treks */
     turns = move_cost / parameter->move_rate;
-    cr->result = amortize(cr->total, PERFECTION * turns);
+    cr->result = amortize(cr->total, perfection * turns);
 
     /* Reduce want by settler cost. Easier than amortize, but still
      * weeds out very small wants. ie we create a threshold here. */
@@ -861,7 +1000,7 @@ static struct cityresult *settler_map_iterate(struct ai_type *ait,
     /* Can we terminate early? We have a 'good enough' spot, and
      * we don't block the establishment of a better city just one
      * further step away. */
-    if (best && best->result > RESULT_IS_ENOUGH
+    if (best && best->result > result_is_enough
         && turns > parameter->move_rate /* sic -- yeah what an explanation! */
         && best_turn < turns /*+ game.info.min_dist_bw_cities*/) {
       break;
@@ -903,6 +1042,9 @@ static struct cityresult *find_best_city_placement(struct ai_type *ait,
   struct unit *ferry = NULL;
   struct cityresult *cr1 = NULL, *cr2 = NULL;
   const struct civ_map *nmap = &(wld.map);
+  const adv_want result_is_enough = dai_largepox_enabled()
+                                    ? LARGEPOX_RESULT_IS_ENOUGH
+                                    : RESULT_IS_ENOUGH;
 
   fc_assert_ret_val(is_ai(pplayer), NULL);
   /* Only virtual units may use virtual boats: */
@@ -914,7 +1056,7 @@ static struct cityresult *find_best_city_placement(struct ai_type *ait,
   parameter.omniscience = !has_handicap(pplayer, H_MAP);
   cr1 = settler_map_iterate(ait, &parameter, punit, 0);
 
-  if (cr1 && cr1->result > RESULT_IS_ENOUGH) {
+  if (cr1 && cr1->result > result_is_enough) {
     /* skip further searches */
     return cr1;
   }
@@ -1027,6 +1169,75 @@ void dai_auto_settler_init(struct ai_plr *ai)
 }
 
 /*************************************************************************//**
+  Turn a founder left over after the compact core is complete into population.
+
+  Republic and Democracy double Settler food upkeep in the Warclient ruleset.
+  Keeping several cancelled founders as slow Workers therefore prevents the
+  very rapture growth they were built to enable. Move each one to a nearby,
+  relatively small city on its island and use the ruleset's generic Join City
+  action. Re-evaluating the smallest target every turn also spreads concurrent
+  founders across the core rather than overfeeding one city.
+*****************************************************************************/
+static bool dai_largepox_join_founder(struct ai_type *ait,
+                                      const struct civ_map *nmap,
+                                      struct player *pplayer,
+                                      struct unit *punit)
+{
+  struct city *best = nullptr;
+  int best_score = FC_INFINITY;
+  int pop = unit_type_get(punit)->pop_cost;
+  int sanity = punit->id;
+
+  if (!unit_can_do_action(punit, ACTION_JOIN_CITY) || pop <= 0) {
+    return FALSE;
+  }
+
+  city_list_iterate(pplayer->cities, pcity) {
+    int score;
+
+    if (tile_continent(city_tile(pcity))
+        != tile_continent(unit_tile(punit))
+        || !city_can_grow_to(pcity, city_size_get(pcity) + pop)) {
+      continue;
+    }
+
+    score = city_size_get(pcity) * 64
+            + real_map_distance(unit_tile(punit), city_tile(pcity));
+    if (best == nullptr || score < best_score
+        || (score == best_score && pcity->id < best->id)) {
+      best = pcity;
+      best_score = score;
+    }
+  } city_list_iterate_end;
+
+  if (best == nullptr) {
+    return FALSE;
+  }
+
+  dai_unit_new_task(ait, punit, AIUNIT_NONE, nullptr);
+  set_unit_activity(punit, ACTIVITY_IDLE, ACTION_NONE);
+  send_unit_info(nullptr, punit);
+
+  if (real_map_distance(unit_tile(punit), city_tile(best)) > 1
+      && (!dai_gothere(ait, pplayer, punit, city_tile(best))
+          || game_unit_by_number(sanity) == nullptr)) {
+    return TRUE;
+  }
+  if (game_unit_by_number(sanity) == nullptr) {
+    return TRUE;
+  }
+
+  if (is_action_enabled_unit_on_city(nmap, ACTION_JOIN_CITY, punit, best)) {
+    UNIT_LOG(LOG_DEBUG, punit, "joins %s after largepox expansion",
+             city_name_get(best));
+    unit_do_action(pplayer, punit->id, best->id,
+                   0, "", ACTION_JOIN_CITY);
+  }
+
+  return TRUE;
+}
+
+/*************************************************************************//**
   Auto settler that can also build cities.
 *****************************************************************************/
 void dai_auto_settler_run(struct ai_type *ait, const struct civ_map *nmap,
@@ -1042,8 +1253,17 @@ void dai_auto_settler_run(struct ai_type *ait, const struct civ_map *nmap,
 
   /* Time it will take worker to complete its given task */
   int completion_time = 0;
+  bool largepox_at_target
+    = dai_largepox_enabled()
+      && city_list_size(pplayer->cities)
+         >= dai_largepox_total_city_target(ait, pplayer);
 
   CHECK_UNIT(punit);
+
+  if (largepox_at_target && unit_is_cityfounder(punit)
+      && dai_largepox_join_founder(ait, nmap, pplayer, punit)) {
+    return;
+  }
 
   /*** If we are on a city mission: Go where we should ***/
 
@@ -1053,9 +1273,25 @@ BUILD_CITY:
     struct tile *ptile = punit->goto_tile;
     int sanity = punit->id;
 
+    /* Several settlers may already be moving when the compact core reaches
+     * its target.  Cancel their city missions and retain them as workers;
+     * otherwise simultaneous missions overshoot an eleven-city largepox
+     * core and dilute both route coverage and luxury spending. */
+    largepox_at_target
+      = dai_largepox_enabled()
+        && city_list_size(pplayer->cities)
+           >= dai_largepox_total_city_target(ait, pplayer);
+    if (largepox_at_target) {
+      dai_unit_new_task(ait, punit, AIUNIT_NONE, NULL);
+      set_unit_activity(punit, ACTIVITY_IDLE, ACTION_NONE);
+      send_unit_info(NULL, punit);
+    }
+
     /* Check that the mission is still possible. If the tile has become
      * unavailable, call it off. */
-    if (!city_can_be_built_here(nmap, ptile, punit, FALSE)) {
+    if (largepox_at_target) {
+      /* Continue below and find terrain work for the former founder. */
+    } else if (!city_can_be_built_here(nmap, ptile, punit, FALSE)) {
       dai_unit_new_task(ait, punit, AIUNIT_NONE, NULL);
       set_unit_activity(punit, ACTIVITY_IDLE, ACTION_NONE);
       send_unit_info(NULL, punit);
@@ -1129,14 +1365,20 @@ BUILD_CITY:
     TIMING_LOG(AIT_WORKERS, TIMER_STOP);
   }
 
-  if (unit_is_cityfounder(punit)) {
+  if (unit_is_cityfounder(punit) && !largepox_at_target) {
     struct cityresult *result;
 
     /* May use a boat: */
     TIMING_LOG(AIT_SETTLERS, TIMER_START);
     result = find_best_city_placement(ait, punit, TRUE, FALSE);
     TIMING_LOG(AIT_SETTLERS, TIMER_STOP);
-    if (result && result->result > best_impr) {
+    if (result
+        && (dai_largepox_enabled() || result->result > best_impr)) {
+      /* A largepox founder is scarce expansion capacity, not an ordinary
+       * Worker.  As long as the empire is below its explicit city target,
+       * any site returned by the placement search must beat irrigation or
+       * road work.  Previously the last Settler on Portugal's island spent
+       * the game improving terrain while legal northern sites stayed empty. */
       UNIT_LOG(LOG_DEBUG, punit, "city want " ADV_WANT_PRINTF, result->result);
       if (tile_city(result->tile)) {
         UNIT_LOG(LOG_DEBUG, punit, "immigrates to %s (%d, %d)",

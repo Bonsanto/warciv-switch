@@ -34,6 +34,8 @@
 #include "movement.h"
 #include "nation.h"
 #include "packets.h"
+#include "terrain.h"
+#include "traderoutes.h"
 #include "unitlist.h"
 
 /* common/aicore */
@@ -79,6 +81,298 @@ action_id aw_actions_extra[MAX_NUM_ACTIONS];
 action_id aw_actions_rmextra[MAX_NUM_ACTIONS];
 
 static struct timer *aw_timer = NULL;
+
+/**********************************************************************//**
+  Return whether the tile has the terrain identified by this rule name.
+**************************************************************************/
+static bool worker_tile_has_terrain(const struct tile *ptile,
+                                    const char *rule_name)
+{
+  return strcmp(terrain_rule_name(tile_terrain(ptile)), rule_name) == 0;
+}
+
+/**********************************************************************//**
+  Return whether the tile carries the resource identified by its rule name.
+**************************************************************************/
+static bool worker_tile_has_resource(const struct tile *ptile,
+                                     const char *rule_name)
+{
+  const struct extra_type *resource = tile_resource(ptile);
+
+  return resource != nullptr
+         && strcmp(extra_rule_name(resource), rule_name) == 0;
+}
+
+/**********************************************************************//**
+  Return whether adding an extra really improves a city-center tile.
+
+  City-center minimum outputs can make irrigation and farmland produce no
+  effective yield even though the terrain normally benefits from them.  The
+  strategic largepox bonus must not turn such a zero-yield change into useful
+  work.  Calculate this from the active ruleset rather than assuming that no
+  ruleset can benefit from an irrigated city center.
+**************************************************************************/
+static bool worker_extra_improves_city_center(const struct tile *ptile,
+                                              const struct extra_type *target)
+{
+  const struct city *pcity = tile_city(ptile);
+  struct tile *vtile;
+  adv_want old_value;
+  adv_want new_value;
+
+  if (pcity == nullptr) {
+    return TRUE;
+  }
+
+  old_value = city_tile_value(pcity, ptile, 0, 0);
+  vtile = tile_virtual_new(ptile);
+  tile_add_extra(vtile, target);
+
+  extra_type_iterate(conflicting) {
+    if (tile_has_extra(vtile, conflicting)
+        && conflicting != target
+        && !can_extras_coexist(target, conflicting)) {
+      tile_remove_extra(vtile, conflicting);
+    }
+  } extra_type_iterate_end;
+
+  new_value = city_tile_value(pcity, vtile, 0, 0);
+  tile_virtual_destroy(vtile);
+
+  return new_value > old_value;
+}
+
+/**********************************************************************//**
+  Return whether the activity performs the requested terrain conversion.
+
+  Rule names are used rather than translated names, and both ends of the
+  conversion are checked. Rulesets without this exact conversion simply do
+  not receive the strategic bonus.
+**************************************************************************/
+static bool worker_action_changes_terrain(const struct tile *ptile,
+                                          enum unit_activity act,
+                                          const char *from_rule_name,
+                                          const char *to_rule_name,
+                                          const char *alternate_to_rule_name)
+{
+  const struct terrain *old_terrain = tile_terrain(ptile);
+  const struct terrain *new_terrain;
+
+  if (!worker_tile_has_terrain(ptile, from_rule_name)) {
+    return FALSE;
+  }
+
+  switch (act) {
+  case ACTIVITY_CULTIVATE:
+    new_terrain = old_terrain->cultivate_result;
+    break;
+  case ACTIVITY_TRANSFORM:
+    new_terrain = old_terrain->transform_result;
+    break;
+  default:
+    return FALSE;
+  }
+
+  if (new_terrain == T_NONE
+      || (strcmp(terrain_rule_name(new_terrain), to_rule_name) != 0
+          && (alternate_to_rule_name == NULL
+              || strcmp(terrain_rule_name(new_terrain),
+                        alternate_to_rule_name) != 0))) {
+    return FALSE;
+  }
+
+  /* Do not strategically force a conversion when the destination has no
+   * corresponding resource slot. tile_change_terrain() will preserve an
+   * explicitly compatible resource or remap it by slot. */
+  return (!tile_resource_is_valid(ptile)
+          || terrain_resource_for_terrain_change(old_terrain, new_terrain,
+                                                 tile_resource(ptile))
+             != NULL);
+}
+
+/**********************************************************************//**
+  True when a tile helps connect a mobile founder to its reserved city site.
+
+  The ordinary road evaluator knows only about existing cities. Largepox
+  builds a dense core from a small opening worker force, so the useful spine
+  is the complete corridor from the Settler's current position to the future
+  city, before the destination exists. Roads there are reused immediately by
+  the founder and the first caravan wave.
+**************************************************************************/
+static bool worker_tile_serves_future_city(const struct player *pplayer,
+                                           const struct tile *ptile)
+{
+  unit_list_iterate(pplayer->units, punit) {
+    const struct tile *destination = punit->goto_tile;
+    int direct_distance;
+    int via_distance;
+
+    if (!unit_is_cityfounder(punit) || destination == nullptr
+        || same_pos(unit_tile(punit), destination)
+        || tile_continent(ptile) != tile_continent(destination)) {
+      continue;
+    }
+
+    direct_distance = real_map_distance(unit_tile(punit), destination);
+    via_distance = real_map_distance(unit_tile(punit), ptile)
+                   + real_map_distance(ptile, destination);
+
+    /* Include either shortest-path branch and a one-tile-wide margin.  That
+     * margin matters on isometric maps, where an equally short diagonal path
+     * can alternate between two adjacent rows. */
+    if (via_distance <= direct_distance + 1) {
+      return TRUE;
+    }
+  } unit_list_iterate_end;
+
+  return FALSE;
+}
+
+/**********************************************************************//**
+  Strategic bonus for developing tiles around a city with trade routes.
+
+  This models a progression graph whose preferred state is irrigated or
+  farmed Plains/Grassland. Roads come next, followed by terrain conversions
+  that move rough land toward those agricultural terrain types. The normal
+  evaluator still supplies the rest of the score.
+**************************************************************************/
+static adv_want worker_trade_city_action_bonus(const struct unit *punit,
+                                               const struct city *pcity,
+                                               const struct tile *ptile,
+                                               enum unit_activity act,
+                                               const struct extra_type *target)
+{
+  int routes = city_num_trade_routes(pcity);
+  int distance = real_map_distance(unit_tile(punit), ptile);
+  const adv_want priority_step = FOOD_WEIGHTING / 3;
+  bool largepox = game.server.ai_largepox;
+  bool largepox_opening = largepox;
+  adv_want bonus;
+
+  /* Irrigation and farmland on a city center are often masked completely by
+   * the center's guaranteed minimum output.  Without this check our large
+   * strategic bonus made both Workers and Engineers perform that useless
+   * action.  Roads and railroads remain eligible on the center. */
+  if (act == ACTIVITY_IRRIGATE && target != nullptr
+      && is_extra_caused_by(target, EC_IRRIGATION)
+      && !worker_extra_improves_city_center(ptile, target)) {
+    return -1;
+  }
+
+  /* The road-building phase ends empire-wide when the first route arrives.
+   * Checking only this city kept peripheral cities in opening mode long after
+   * the trade snowball had begun. */
+  if (largepox_opening) {
+    city_list_iterate(city_owner(pcity)->cities, acity) {
+      if (city_num_trade_routes(acity) > 0) {
+        largepox_opening = FALSE;
+        break;
+      }
+    } city_list_iterate_end;
+  }
+
+  if (routes <= 0 && !largepox) {
+    return 0;
+  }
+
+  if (act == ACTIVITY_IRRIGATE && target != NULL
+      && is_extra_caused_by(target, EC_IRRIGATION)
+      && (worker_tile_has_resource(ptile, "Wheat")
+          || worker_tile_has_resource(ptile, "Oasis"))) {
+    /* Wheat and Oasis are the fastest route to the food surplus needed by
+     * rapture. Improve them before ordinary agricultural tiles. */
+    if (largepox_opening) {
+      /* A nearby food special is worth a short detour, but it must not pull
+       * every opening Worker across the whole island.  That old behaviour
+       * delayed both the road spine and the first caravan wave. */
+      bonus = priority_step
+              * (distance == 0 ? 34
+                 : distance == 1 ? 32
+                 : distance == 2 ? 28 : 18);
+    } else {
+      /* Once trade is moving, finish nearby food immediately.  A flat
+       * empire-wide special-resource bonus made all Workers cross the island
+       * toward the same Wheat while ordinary irrigable tiles beside their
+       * current city remained dry. */
+      bonus = priority_step
+              * (distance == 0 ? 18
+                 : distance == 1 ? 16
+                 : distance == 2 ? 12 : 6);
+    }
+  } else if (act == ACTIVITY_GEN_ROAD && target != NULL
+             && extra_road_get(target) != NULL) {
+    /* Before the first routes arrive, the same three opening Workers must
+     * build the transport spine between the dense future city sites.  Put
+     * roads immediately behind Wheat/Oasis and ahead of ordinary irrigation;
+     * this lets Settlers and the first caravan wave reuse the network.  Once
+     * trade exists, food regains precedence while missing road/rail links
+     * remain the next graph edge to complete. */
+    if (largepox_opening) {
+      bool future_corridor
+        = worker_tile_serves_future_city(city_owner(pcity), ptile);
+      int local_priority;
+
+      /* Grow roads outwards from each Worker's current position.  A flat
+       * empire-wide bonus made several Workers select the same remote tile,
+       * displace one another, and spend most of the opening walking. */
+      if (distance == 0) {
+        local_priority = 29;
+      } else if (distance == 1) {
+        local_priority = 27;
+      } else if (distance == 2) {
+        local_priority = 19;
+      } else {
+        local_priority = 8;
+      }
+      if (future_corridor && distance <= 2) {
+        local_priority += 2;
+      }
+      bonus = priority_step * local_priority;
+    } else {
+      bonus = priority_step
+              * (distance == 0 ? 7
+                 : distance == 1 ? 6
+                 : distance == 2 ? 4 : 2);
+    }
+  } else if (act == ACTIVITY_IRRIGATE && target != NULL
+      && is_extra_caused_by(target, EC_IRRIGATION)
+      && (worker_tile_has_terrain(ptile, "Plains")
+          || worker_tile_has_terrain(ptile, "Grassland"))) {
+    /* Highest-priority graph state: irrigated/farmed Plains or Grassland. */
+    if (largepox_opening) {
+      /* Until the first route exists, ordinary irrigation is not merely a
+       * lower score: it is the wrong phase of the state machine.  Immediate
+       * food gains otherwise beat a road one tile away and all three opening
+       * Workers stop extending the network.  Wheat/Oasis was handled above. */
+      return -1;
+    }
+    bonus = priority_step
+            * (distance == 0 ? 14
+               : distance == 1 ? 12
+               : distance == 2 ? 9 : 5);
+  } else if (worker_action_changes_terrain(ptile, act, "Desert",
+                                            "Plains", NULL)) {
+    bonus = priority_step * 5;
+  } else if (worker_action_changes_terrain(ptile, act, "Forest",
+                                            "Plains", NULL)) {
+    bonus = priority_step * 4;
+  } else if (worker_action_changes_terrain(ptile, act, "Plains",
+                                            "Grassland", NULL)) {
+    bonus = priority_step * 3;
+  } else if (worker_action_changes_terrain(ptile, act, "Hills",
+                                            "Plains", "Grassland")) {
+    bonus = priority_step * 2;
+  } else if (worker_action_changes_terrain(ptile, act, "Mountains",
+                                            "Hills", NULL)) {
+    bonus = priority_step;
+  } else {
+    return 0;
+  }
+
+  /* Prefer cities with several established routes, but cap the effect so
+   * one metropolis cannot monopolize every auto-worker. */
+  return bonus + (MAX(1, MIN(routes, 4)) - 1) * 3;
+}
 
 /**********************************************************************//**
   Free resources allocated for autoworkers system
@@ -312,9 +606,11 @@ static void consider_worker_action(const struct player *pplayer,
                                    adv_want new_tile_value,
                                    adv_want old_tile_value,
                                    bool in_use, int delay,
+                                   adv_want strategic_bonus,
                                    adv_want *best_value,
                                    adv_want *best_old_tile_value,
                                    int *best_extra,
+                                   adv_want *best_strategic_bonus,
                                    bool *improve_worked,
                                    int *best_delay,
                                    enum unit_activity *best_act,
@@ -344,15 +640,22 @@ static void consider_worker_action(const struct player *pplayer,
   /* find the present value of the future benefit of this action */
   if (improves || extra > 0) {
     if (!(*improve_worked) && !in_use) {
+      adv_want candidate_value = new_tile_value + strategic_bonus;
+      adv_want previous_value = *best_value + *best_strategic_bonus;
+
       /* Going to improve tile that is not yet in use.
        * Getting the best possible total for next citizen to work on is more
-       * important than amount tile gets improved. */
-      if (improves && (new_tile_value > *best_value
-                       || (ADV_WANTS_EQ(new_tile_value, *best_value)
-                           && old_tile_value < *best_old_tile_value))) {
+       * important than amount tile gets improved. Strategic bonuses must
+       * participate in this comparison, or the requested action ordering is
+       * lost whenever both candidate tiles are currently unused. */
+      if ((improves || strategic_bonus > 0)
+          && (candidate_value > previous_value
+              || (ADV_WANTS_EQ(candidate_value, previous_value)
+                  && old_tile_value < *best_old_tile_value))) {
         *best_value = new_tile_value;
         *best_old_tile_value = old_tile_value;
         *best_extra = extra;
+        *best_strategic_bonus = strategic_bonus;
         *best_act = act;
         *best_target = target;
         *best_tile = ptile;
@@ -397,6 +700,7 @@ static void consider_worker_action(const struct player *pplayer,
       }
       *best_old_tile_value = old_tile_value;
       *best_extra = extra;
+      *best_strategic_bonus = strategic_bonus;
       *best_act = act;
       *best_target = target;
       *best_tile = ptile;
@@ -458,6 +762,7 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
   adv_want best_newv = 0;
   bool improve_worked = FALSE;
   int best_extra = 0;
+  adv_want best_strategic_bonus = 0;
   int best_delay = 0;
 
   /* Closest worker, if any, headed towards target tile */
@@ -535,6 +840,7 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
           /* Now, consider various activities... */
           aw_transform_action_iterate(act) {
             struct extra_type *target = NULL;
+            adv_want priority_bonus;
             enum extra_cause cause =
                 activity_to_extra_cause(action_id_get_activity(act));
             enum extra_rmcause rmcause =
@@ -569,14 +875,22 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
                 turns++;
               }
 
-              consider_worker_action(pplayer,
-                                     action_id_get_activity(act),
-                                     target, 0.0, base_value,
-                                     oldv, in_use, turns,
-                                     &best_newv, &best_oldv, &best_extra,
-                                     &improve_worked,
-                                     &best_delay, best_act, best_target,
-                                     best_tile, ptile);
+              priority_bonus
+                = worker_trade_city_action_bonus(
+                    punit, pcity, ptile, action_id_get_activity(act), target);
+
+              if (priority_bonus >= 0) {
+                consider_worker_action(pplayer,
+                                       action_id_get_activity(act),
+                                       target, priority_bonus, base_value,
+                                       oldv, in_use, turns,
+                                       priority_bonus,
+                                       &best_newv, &best_oldv, &best_extra,
+                                       &best_strategic_bonus,
+                                       &improve_worked,
+                                       &best_delay, best_act, best_target,
+                                       best_tile, ptile);
+              }
 
             } /* endif: can the worker perform this action */
           } aw_transform_action_iterate_end;
@@ -703,12 +1017,21 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
               }
 
               if (act != ACTIVITY_LAST) {
-                consider_worker_action(pplayer, act, pextra, extra, base_value,
-                                       oldv, in_use, turns,
-                                       &best_newv, &best_oldv, &best_extra,
-                                       &improve_worked,
-                                       &best_delay, best_act, best_target,
-                                       best_tile, ptile);
+                adv_want priority_bonus
+                  = worker_trade_city_action_bonus(punit, pcity, ptile, act,
+                                                   pextra);
+
+                if (priority_bonus >= 0) {
+                  consider_worker_action(pplayer, act, pextra,
+                                         extra + priority_bonus, base_value,
+                                         oldv, in_use, turns,
+                                         priority_bonus,
+                                         &best_newv, &best_oldv, &best_extra,
+                                         &best_strategic_bonus,
+                                         &improve_worked,
+                                         &best_delay, best_act, best_target,
+                                         best_tile, ptile);
+                }
               } else {
                 fc_assert(!removing);
 
@@ -735,11 +1058,16 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
                     adv_want dep_value
                       = base_value + adv_city_worker_extra_get(pcity, cindex,
                                                                dep_tgt);
+                    adv_want priority_bonus
+                      = worker_trade_city_action_bonus(
+                          punit, pcity, ptile, ACTIVITY_GEN_ROAD, dep_tgt);
 
                     consider_worker_action(pplayer, ACTIVITY_GEN_ROAD,
-                                           dep_tgt, extra, dep_value,
-                                           oldv, in_use, dep_turns,
+                                           dep_tgt, extra + priority_bonus,
+                                           dep_value, oldv, in_use, dep_turns,
+                                           priority_bonus,
                                            &best_newv, &best_oldv, &best_extra,
+                                           &best_strategic_bonus,
                                            &improve_worked,
                                            &best_delay, best_act, best_target,
                                            best_tile, ptile);
@@ -779,15 +1107,24 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
                           = base_value + adv_city_worker_extra_get(pcity,
                                                                    cindex,
                                                                    pdep);
+                        adv_want priority_bonus
+                          = worker_trade_city_action_bonus(
+                              punit, pcity, ptile, eval_dep_act, pdep);
 
-                        consider_worker_action(pplayer, eval_dep_act, pdep,
-                                               0.0, dep_value, oldv, in_use,
-                                               dep_turns, &best_newv,
-                                               &best_oldv,
-                                               &best_extra, &improve_worked,
-                                               &best_delay,
-                                               best_act, best_target,
-                                               best_tile, ptile);
+                        if (priority_bonus >= 0) {
+                          consider_worker_action(pplayer, eval_dep_act, pdep,
+                                                 priority_bonus, dep_value,
+                                                 oldv, in_use, dep_turns,
+                                                 priority_bonus,
+                                                 &best_newv,
+                                                 &best_oldv,
+                                                 &best_extra,
+                                                 &best_strategic_bonus,
+                                                 &improve_worked,
+                                                 &best_delay,
+                                                 best_act, best_target,
+                                                 best_tile, ptile);
+                        }
                       }
                     }
                   }
@@ -811,10 +1148,15 @@ adv_want worker_evaluate_improvements(const struct civ_map *nmap,
   best_newv = MAX(best_newv, 0); /* sanity */
 
   if (best_newv > 0) {
-    log_debug("Worker %d@(%d,%d) wants to %s at (%d,%d) with desire "
-              ADV_WANT_PRINTF,
+    const struct extra_type *resource = tile_resource(*best_tile);
+
+    log_debug("Worker %d@(%d,%d) wants to %s at (%d,%d) on %s/%s "
+              "with desire " ADV_WANT_PRINTF,
               punit->id, TILE_XY(unit_tile(punit)),
-              get_activity_text(*best_act), TILE_XY(*best_tile), best_newv);
+              get_activity_text(*best_act), TILE_XY(*best_tile),
+              terrain_rule_name(tile_terrain(*best_tile)),
+              resource != nullptr ? extra_rule_name(resource) : "none",
+              best_newv);
   } else {
     /* Fill in dummy values. The callers should check if the return value
      * is > 0 but this will avoid confusing them. */

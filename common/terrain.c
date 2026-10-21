@@ -270,6 +270,58 @@ bool terrain_has_resource(const struct terrain *pterrain,
 }
 
 /**********************************************************************//**
+  Return the resource a tile should have after changing terrain.
+
+  A resource explicitly supported by the destination terrain is preserved.
+  Otherwise resources are mapped by their position in each terrain's
+  resource list. This lets rulesets define generic resource families:
+  Forest's first/second resources, for example, become Plains' first/second
+  resources without hard-coding individual resource names. If the
+  destination has fewer resource slots, the index wraps around; changing
+  to a terrain with one resource therefore maps every source resource to it.
+
+  Return NULL when the source resource does not belong to the old terrain,
+  or the destination terrain has no resources.
+**************************************************************************/
+struct extra_type *
+terrain_resource_for_terrain_change(const struct terrain *old_terrain,
+                                    const struct terrain *new_terrain,
+                                    struct extra_type *old_resource)
+{
+  int resource_slot = 0;
+  int target_resource_count = 0;
+
+  if (old_terrain == T_NONE || new_terrain == T_NONE
+      || old_resource == NULL || old_terrain->resources == NULL
+      || new_terrain->resources == NULL) {
+    return NULL;
+  }
+
+  if (terrain_has_resource(new_terrain, old_resource)) {
+    return old_resource;
+  }
+
+  while (old_terrain->resources[resource_slot] != NULL
+         && old_terrain->resources[resource_slot] != old_resource) {
+    resource_slot++;
+  }
+
+  if (old_terrain->resources[resource_slot] == NULL) {
+    return NULL;
+  }
+
+  while (new_terrain->resources[target_resource_count] != NULL) {
+    target_resource_count++;
+  }
+
+  if (target_resource_count == 0) {
+    return NULL;
+  }
+
+  return new_terrain->resources[resource_slot % target_resource_count];
+}
+
+/**********************************************************************//**
   Initialize resource_type structure.
 **************************************************************************/
 struct resource_type *resource_type_init(struct extra_type *pextra)

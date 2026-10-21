@@ -5594,15 +5594,41 @@ static void load_cma_preset(struct section_file *file, int i)
 }
 
 /************************************************************************//**
+  Initialize one of the specialist-aware local Rapture presets.
+****************************************************************************/
+static void init_rapture_cma_parameter(struct cm_parameter *parameter,
+                                       Output_type_id specialist_output,
+                                       int shield_surplus)
+{
+  cm_init_parameter(parameter);
+  output_type_iterate(output) {
+    parameter->factor[output] = 0;
+  } output_type_iterate_end;
+  parameter->minimal_surplus[O_FOOD] = 1;
+  parameter->minimal_surplus[O_SHIELD] = shield_surplus;
+  parameter->minimal_surplus[O_GOLD] = -20;
+  parameter->factor[O_SHIELD] = 5;
+  parameter->factor[O_GOLD] = 25;
+  parameter->require_happy = TRUE;
+  parameter->happy_factor = 0;
+  parameter->specialist_output = specialist_output;
+}
+
+/************************************************************************//**
   Replace the old local Rapture preset with the two specialist-aware
-  variants. Checking the complete parameter set avoids changing an unrelated
-  user preset that happens to have the same name.
+  variants, and upgrade the first variants to require one production surplus.
+  Checking the complete parameter set avoids changing an unrelated user
+  preset that happens to have the same name.
 ****************************************************************************/
 static void migrate_legacy_rapture_cma_preset(void)
 {
   struct cm_parameter legacy;
+  struct cm_parameter previous;
   struct cm_parameter replacement;
-  int legacy_index = -1;
+  bool add_scientists = FALSE;
+  bool add_taxmen = FALSE;
+  bool have_scientists = FALSE;
+  bool have_taxmen = FALSE;
   int i;
 
   cm_init_parameter(&legacy);
@@ -5617,35 +5643,47 @@ static void migrate_legacy_rapture_cma_preset(void)
   legacy.require_happy = TRUE;
   legacy.happy_factor = 0;
 
-  for (i = 0; i < cmafec_preset_num(); i++) {
+  init_rapture_cma_parameter(&previous, O_SCIENCE, 0);
+  init_rapture_cma_parameter(&replacement, O_SCIENCE, 1);
+
+  for (i = cmafec_preset_num() - 1; i >= 0; i--) {
+    const char *name = cmafec_preset_get_descr(i);
+    const struct cm_parameter *parameter = cmafec_preset_get_parameter(i);
+
     if (!strcmp(cmafec_preset_get_descr(i), "Rapture")
-        && cm_are_parameter_equal(cmafec_preset_get_parameter(i), &legacy)) {
-      legacy_index = i;
-      break;
+        && cm_are_parameter_equal(parameter, &legacy)) {
+      cmafec_preset_remove(i);
+      add_scientists = TRUE;
+      add_taxmen = TRUE;
+    } else if (!strcmp(name, _("Rapture - Scientists"))) {
+      if (cm_are_parameter_equal(parameter, &previous)) {
+        cmafec_preset_remove(i);
+        add_scientists = TRUE;
+      } else if (cm_are_parameter_equal(parameter, &replacement)) {
+        have_scientists = TRUE;
+      }
+    } else if (!strcmp(name, _("Rapture - Taxmen"))) {
+      previous.specialist_output = O_GOLD;
+      replacement.specialist_output = O_GOLD;
+      if (cm_are_parameter_equal(parameter, &previous)) {
+        cmafec_preset_remove(i);
+        add_taxmen = TRUE;
+      } else if (cm_are_parameter_equal(parameter, &replacement)) {
+        have_taxmen = TRUE;
+      }
+      previous.specialist_output = O_SCIENCE;
+      replacement.specialist_output = O_SCIENCE;
     }
   }
 
-  if (legacy_index < 0) {
-    return;
+  if (add_scientists && !have_scientists) {
+    replacement.specialist_output = O_SCIENCE;
+    cmafec_preset_add(_("Rapture - Scientists"), &replacement);
   }
-
-  cmafec_preset_remove(legacy_index);
-
-  cm_init_parameter(&replacement);
-  output_type_iterate(output) {
-    replacement.factor[output] = 0;
-  } output_type_iterate_end;
-  replacement.minimal_surplus[O_FOOD] = 1;
-  replacement.minimal_surplus[O_GOLD] = -20;
-  replacement.factor[O_SHIELD] = 5;
-  replacement.factor[O_GOLD] = 25;
-  replacement.require_happy = TRUE;
-  replacement.happy_factor = 0;
-
-  replacement.specialist_output = O_SCIENCE;
-  cmafec_preset_add(_("Rapture - Scientists"), &replacement);
-  replacement.specialist_output = O_GOLD;
-  cmafec_preset_add(_("Rapture - Taxmen"), &replacement);
+  if (add_taxmen && !have_taxmen) {
+    replacement.specialist_output = O_GOLD;
+    cmafec_preset_add(_("Rapture - Taxmen"), &replacement);
+  }
 }
 
 /************************************************************************//**

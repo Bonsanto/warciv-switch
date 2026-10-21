@@ -269,6 +269,36 @@ reqs={"type","name","range","present"
 type="City_Vision_Radius_Sq"
 value=8
 
+[effect_harbour_city_radius]
+type="City_Radius_Sq"
+value=10
+reqs={"type","name","range"
+"Building","Harbour","City"
+}
+
+[effect_mass_transit_city_radius]
+type="City_Radius_Sq"
+value=10
+reqs={"type","name","range","present"
+"Building","Mass Transit","City",TRUE
+"Building","Harbour","City",FALSE
+}
+
+[effect_harbour_city_vision]
+type="City_Vision_Radius_Sq"
+value=10
+reqs={"type","name","range"
+"Building","Harbour","City"
+}
+
+[effect_mass_transit_city_vision]
+type="City_Vision_Radius_Sq"
+value=10
+reqs={"type","name","range","present"
+"Building","Mass Transit","City",TRUE
+"Building","Harbour","City",FALSE
+}
+
 [effect_31]
 type="Max_Trade_Routes"
 value=4
@@ -2216,6 +2246,7 @@ reqs={"type","name","range"
 
 [effect_272]
 type="Traderoute_Pct"
+; city.c applies this as (100 + value) / 100, so 100 means 2.00x.
 value=100
 
 [effect_273]
@@ -2291,6 +2322,31 @@ type="Tile_Workable"
 value=1
 reqs={"type","name","range","present"
 "Terrain","Inaccessible","Tile",FALSE
+}
+
+[effect_outer_city_ring_requires_transport]
+type="Tile_Workable"
+value=-1
+reqs={"type","name","range","present"
+"MaxDistanceSq","8","Tile",FALSE
+}
+
+[effect_harbour_outer_ocean_workable]
+type="Tile_Workable"
+value=1
+reqs={"type","name","range","present"
+"Building","Harbour","City",TRUE
+"TerrainClass","Oceanic","Tile",TRUE
+"MaxDistanceSq","8","Tile",FALSE
+}
+
+[effect_mass_transit_outer_land_workable]
+type="Tile_Workable"
+value=1
+reqs={"type","name","range","present"
+"Building","Mass Transit","City",TRUE
+"TerrainClass","Land","Tile",TRUE
+"MaxDistanceSq","8","Tile",FALSE
 }
 
 [effect_285]

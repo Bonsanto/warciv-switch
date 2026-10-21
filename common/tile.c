@@ -496,7 +496,22 @@ static void tile_destroy_extra(struct tile *ptile, struct extra_type *pextra)
 ****************************************************************************/
 void tile_change_terrain(struct tile *ptile, struct terrain *pterrain)
 {
+  struct terrain *old_terrain = tile_terrain(ptile);
+  struct extra_type *old_resource
+    = tile_resource_is_valid(ptile) ? tile_resource(ptile) : NULL;
+  struct extra_type *new_resource
+    = terrain_resource_for_terrain_change(old_terrain, pterrain,
+                                          old_resource);
+
+  if (old_resource != new_resource) {
+    tile_set_resource(ptile, NULL);
+  }
+
   tile_set_terrain(ptile, pterrain);
+
+  if (old_resource != new_resource && new_resource != NULL) {
+    tile_set_resource(ptile, new_resource);
+  }
 
   /* Remove unsupported extras */
   extra_type_iterate(pextra) {

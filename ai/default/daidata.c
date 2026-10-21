@@ -16,11 +16,13 @@
 #endif
 
 /* common */
+#include "city.h"
 #include "game.h"
 #include "government.h"
 #include "map.h"
 #include "multipliers.h"
 #include "research.h"
+#include "traderoutes.h"
 
 /* aicore */
 #include "aiactions.h"
@@ -42,6 +44,9 @@
 #include "daiunit.h"
 
 #include "daidata.h"
+
+#define DAI_LARGEPOX_ROUTE_COVERAGE_MIN 100
+#define DAI_LARGEPOX_TRADE_NETWORK_MAX_TURNS 28
 
 static void dai_diplomacy_new(struct ai_type *ait,
                               const struct player *plr1,
@@ -94,8 +99,405 @@ void dai_data_init(struct ai_type *ait, struct player *pplayer)
 
   ai->settler = NULL;
 
+  ai->largepox.state = DAI_GROWTH_BOOTSTRAP;
+  ai->largepox.resume_state = DAI_GROWTH_BOOTSTRAP;
+  ai->largepox.last_transition_turn = game.info.turn;
+  ai->largepox.support_city_id = 0;
+  ai->largepox.target_core_cities = 11;
+  ai->largepox.core_cities = 0;
+  ai->largepox.route_slots = 0;
+  ai->largepox.established_routes = 0;
+  ai->largepox.route_coverage_pct = 0;
+  ai->largepox.rapture_eligible = 0;
+  ai->largepox.rapture_ready = 0;
+  ai->largepox.average_core_size = 0;
+  ai->largepox.founder_stalled_turns = 0;
+  ai->largepox.last_city_count = 0;
+  ai->largepox.last_city_growth_turn = game.info.turn;
+
   /* Initialise autoworker. */
   dai_auto_settler_init(ai);
+}
+
+/************************************************************************//**
+  Whether the optional Warclient largepox strategy is enabled.
+****************************************************************************/
+bool dai_largepox_enabled(void)
+{
+  return game.server.ai_largepox;
+}
+
+/************************************************************************//**
+  Stable, untranslated name used in diagnostic output.
+****************************************************************************/
+const char *dai_largepox_state_name(enum dai_growth_state state)
+{
+  switch (state) {
+  case DAI_GROWTH_BOOTSTRAP:
+    return "bootstrap";
+  case DAI_GROWTH_EXPAND_CORE:
+    return "expand-core";
+  case DAI_GROWTH_TRADE_NETWORK:
+    return "trade-network";
+  case DAI_GROWTH_RAPTURE_PREP:
+    return "rapture-prep";
+  case DAI_GROWTH_RAPTURE:
+    return "rapture";
+  case DAI_GROWTH_METROPOLIS:
+    return "metropolis";
+  case DAI_GROWTH_EMERGENCY:
+    return "emergency";
+  }
+
+  return "unknown";
+}
+
+/************************************************************************//**
+  Return the current largepox state for a default-AI player.
+****************************************************************************/
+enum dai_growth_state dai_largepox_state(struct ai_type *ait,
+                                         const struct player *pplayer)
+{
+  return def_ai_player_data(pplayer, ait)->largepox.state;
+}
+
+/************************************************************************//**
+  A support city builds founders, terrain improvers, and defenders but is not
+  required to join the four-route rapture core.
+****************************************************************************/
+bool dai_largepox_city_is_support(struct ai_type *ait,
+                                  const struct player *pplayer,
+                                  const struct city *pcity)
+{
+  return dai_largepox_enabled()
+         && def_ai_player_data(pplayer, ait)->largepox.support_city_id
+            == pcity->id;
+}
+
+/************************************************************************//**
+  Whether city and tax management should favor vertical growth.
+****************************************************************************/
+bool dai_largepox_growth_focus(struct ai_type *ait,
+                               const struct player *pplayer)
+{
+  enum dai_growth_state state = dai_largepox_state(ait, pplayer);
+
+  return dai_largepox_enabled()
+         && (state == DAI_GROWTH_RAPTURE_PREP
+             || state == DAI_GROWTH_RAPTURE
+             || state == DAI_GROWTH_METROPOLIS
+             /* The last coastal infill wave must not switch off the
+              * established core's celebration merely because three cities
+              * are still missing. */
+             || (state == DAI_GROWTH_EXPAND_CORE
+                 && city_list_size(pplayer->cities) >= 12));
+}
+
+/************************************************************************//**
+  Return the active largepox expansion target.
+
+  On a broad island, stop the opening wave at twelve cities.  Expose the
+  complete map-sensitive target only after that core has both an average
+  three established route slots per city and an average size of ten.
+  This keeps the AI growing and building infrastructure instead of spending
+  the first rapture cycle on low-value infill founders.
+****************************************************************************/
+int dai_largepox_total_city_target(struct ai_type *ait,
+                                   const struct player *pplayer)
+{
+  const struct ai_plr *ai = def_ai_player_data(pplayer, ait);
+  int complete_target = ai->largepox.target_core_cities + 1;
+  int opening_target = MIN(12, complete_target);
+
+  if (ai->largepox.established_routes < 3 * opening_target
+      || ai->largepox.average_core_size < 10) {
+    return opening_target;
+  }
+
+  return complete_target;
+}
+
+/************************************************************************//**
+  Choose one non-capital city as a stable support city once the empire is
+  large enough. Lower-yield, smaller cities are preferred.
+****************************************************************************/
+static void dai_largepox_select_support_city(struct ai_type *ait,
+                                              struct player *pplayer)
+{
+  struct ai_plr *ai = def_ai_player_data(pplayer, ait);
+  struct city *best = nullptr;
+  int best_score = FC_INFINITY;
+  bool current_valid = FALSE;
+  int complete_target = ai->largepox.target_core_cities + 1;
+  int opening_target = MIN(12, complete_target);
+
+  /* A dedicated support city is useful while the core is being founded,
+   * but keeping it forever costs one full set of trade routes and one
+   * rapturing metropolis.  Once expansion has handed off to the trade
+   * network, every city joins the economic core. */
+  if (ai->largepox.state != DAI_GROWTH_BOOTSTRAP
+      && ai->largepox.state != DAI_GROWTH_EXPAND_CORE) {
+    ai->largepox.support_city_id = 0;
+    return;
+  }
+
+  /* The support city is an opening accelerator, not a permanent exclusion.
+   * In the second expansion wave it used to remove up to four routes from
+   * the aggregate metric.  That dropped the active target back from fifteen
+   * to twelve and made completed Settlers abandon their city mission. */
+  if (city_list_size(pplayer->cities) >= opening_target) {
+    ai->largepox.support_city_id = 0;
+    return;
+  }
+
+  if (city_list_size(pplayer->cities) < 5) {
+    ai->largepox.support_city_id = 0;
+    return;
+  }
+
+  city_list_iterate(pplayer->cities, pcity) {
+    if (pcity->id == ai->largepox.support_city_id) {
+      current_valid = TRUE;
+      break;
+    }
+  } city_list_iterate_end;
+
+  if (current_valid) {
+    return;
+  }
+
+  city_list_iterate(pplayer->cities, pcity) {
+    int score;
+
+    if (is_capital(pcity)) {
+      continue;
+    }
+
+    score = city_size_get(pcity) * 5
+            + MAX(0, pcity->surplus[O_FOOD]) * 3
+            + MAX(0, pcity->surplus[O_SHIELD]) * 2
+            + MAX(0, pcity->surplus[O_TRADE]) * 5
+            + city_num_trade_routes(pcity) * 12;
+    if (score < best_score
+        || (score == best_score && best != nullptr && pcity->id < best->id)) {
+      best = pcity;
+      best_score = score;
+    }
+  } city_list_iterate_end;
+
+  ai->largepox.support_city_id = best != nullptr ? best->id : 0;
+}
+
+/************************************************************************//**
+  Set a map-sensitive target capped at the observed Warclient pattern of
+  eleven growth cities plus one support city.  The previous thresholds made
+  the AI stop at seven to ten cities on islands where a human largepox layout
+  still had several useful coastal gaps.  Keep scaling down genuinely cramped
+  starts, but use one more density step on ordinary 200-tile-per-player
+  archipelagos.
+****************************************************************************/
+static int dai_largepox_target_core_cities(const struct player *pplayer,
+                                            const struct adv_data *adv)
+{
+  int occupied_land = 0;
+
+  for (Continent_id cont = 1; cont <= adv->num_continents; cont++) {
+    if (adv->stats.cities[cont] > 0) {
+      occupied_land += adv->continents[cont].size;
+    }
+  }
+
+  if (occupied_land < 40) {
+    return 7;
+  } else if (occupied_land < 48) {
+    return 8;
+  } else if (occupied_land < 56) {
+    return 9;
+  } else if (occupied_land < 64) {
+    return 10;
+  }
+
+  /* A broad fair-island start has room for the fifteen-city interlocking
+   * layout used by the reference games.  Twelve was an opening checkpoint,
+   * not a final density target; treating it as a hard cap left long coastal
+   * strips permanently empty. */
+  return 14;
+}
+
+/************************************************************************//**
+  Refresh the explainable largepox state and its aggregate metrics.
+****************************************************************************/
+void dai_largepox_update(struct ai_type *ait, struct player *pplayer)
+{
+  struct ai_plr *ai;
+  struct adv_data *adv;
+  enum dai_growth_state old_state, desired;
+  int total_size = 0;
+  int severe_food_deficits = 0;
+  int best_founder_want = 0;
+  int city_count;
+  int total_city_target;
+  int opening_city_target;
+  int state_age;
+  bool mature_infill;
+  bool trade_network_timed_out;
+
+  if (!dai_largepox_enabled() || !is_ai(pplayer) || is_barbarian(pplayer)) {
+    return;
+  }
+
+  ai = def_ai_player_data(pplayer, ait);
+  adv = adv_data_get(pplayer, nullptr);
+  old_state = ai->largepox.state;
+  state_age = MAX(0, game.info.turn - ai->largepox.last_transition_turn);
+
+  city_count = city_list_size(pplayer->cities);
+  ai->largepox.target_core_cities
+    = dai_largepox_target_core_cities(pplayer, adv);
+  dai_largepox_select_support_city(ait, pplayer);
+
+  if (city_count > ai->largepox.last_city_count) {
+    ai->largepox.last_city_growth_turn = game.info.turn;
+  }
+  ai->largepox.last_city_count = city_count;
+
+  total_city_target = ai->largepox.target_core_cities + 1;
+  opening_city_target = MIN(12, total_city_target);
+  ai->largepox.core_cities = 0;
+  ai->largepox.route_slots = 0;
+  ai->largepox.established_routes = 0;
+  ai->largepox.rapture_eligible = 0;
+  ai->largepox.rapture_ready = 0;
+
+  city_list_iterate(pplayer->cities, pcity) {
+    struct ai_city *city_data = def_ai_city_data(pcity, ait);
+
+    best_founder_want = MAX(best_founder_want,
+                            MAX(0, city_data->founder_want));
+    if (pcity->surplus[O_FOOD] <= -2) {
+      severe_food_deficits++;
+    }
+    if (dai_largepox_city_is_support(ait, pplayer, pcity)) {
+      continue;
+    }
+
+    ai->largepox.core_cities++;
+    total_size += city_size_get(pcity);
+    ai->largepox.route_slots += max_trade_routes(pcity);
+    ai->largepox.established_routes
+      += MIN(city_num_trade_routes(pcity), max_trade_routes(pcity));
+
+    /* Rapture is deliberately restricted to size three or greater. */
+    if (city_size_get(pcity) >= 3
+        && city_can_grow_to(pcity, city_size_get(pcity) + 1)) {
+      ai->largepox.rapture_eligible++;
+      if (city_happy(pcity) && pcity->surplus[O_FOOD] >= 1) {
+        ai->largepox.rapture_ready++;
+      }
+    }
+  } city_list_iterate_end;
+
+  ai->largepox.average_core_size
+    = ai->largepox.core_cities > 0
+      ? total_size / ai->largepox.core_cities : 0;
+  ai->largepox.route_coverage_pct
+    = ai->largepox.route_slots > 0
+      ? 100 * ai->largepox.established_routes / ai->largepox.route_slots
+      : 100;
+
+  if (ai->largepox.core_cities >= 9 && best_founder_want < 50) {
+    ai->largepox.founder_stalled_turns++;
+  } else {
+    ai->largepox.founder_stalled_turns = 0;
+  }
+
+  trade_network_timed_out
+    = old_state == DAI_GROWTH_TRADE_NETWORK
+      && state_age >= DAI_LARGEPOX_TRADE_NETWORK_MAX_TURNS;
+  mature_infill
+    = city_count >= opening_city_target
+      /* Match the active target above: finish the trade backbone and the
+       * first vertical-growth cycle before spending production on the last
+       * coastal infill sites. */
+      && ai->largepox.established_routes >= 3 * opening_city_target
+      && ai->largepox.average_core_size >= 10;
+
+  if (severe_food_deficits > 0) {
+    if (old_state != DAI_GROWTH_EMERGENCY) {
+      ai->largepox.resume_state = old_state;
+    }
+    desired = DAI_GROWTH_EMERGENCY;
+  } else if (old_state == DAI_GROWTH_EMERGENCY) {
+    desired = ai->largepox.resume_state;
+  } else if (city_count < 3) {
+    desired = DAI_GROWTH_BOOTSTRAP;
+  } else if (city_count < opening_city_target
+             && best_founder_want >= 50) {
+    /* Resume expansion whenever a legal useful site exists.  State-age and
+     * stall timeouts made this transition effectively one-way: after the AI
+     * began rapture, a newly explored coastal gap could remain empty for the
+     * rest of the game.  Compare the complete empire size here, not only the
+     * core count; the latter deliberately excludes the support city during
+     * expansion and otherwise caused an off-by-one stop. */
+    desired = DAI_GROWTH_EXPAND_CORE;
+  } else if (city_count < total_city_target
+             && mature_infill && best_founder_want >= 50) {
+    /* Complete the high-density coastal infill only after the original
+     * twelve-city core has funded its route network.  Expanding to fifteen
+     * before caravans would merely move the old delay to a larger target. */
+    desired = DAI_GROWTH_EXPAND_CORE;
+  } else if (ai->largepox.core_cities < 5) {
+    desired = DAI_GROWTH_EXPAND_CORE;
+  } else if (ai->largepox.route_coverage_pct
+             < DAI_LARGEPOX_ROUTE_COVERAGE_MIN
+             && !trade_network_timed_out
+             && (old_state == DAI_GROWTH_BOOTSTRAP
+                 || old_state == DAI_GROWTH_EXPAND_CORE
+                 || old_state == DAI_GROWTH_TRADE_NETWORK)) {
+    /* A partial network is enough to fund the first rapture cycle. Do not
+     * wait forever when pathfinding or geography leaves some route slots
+     * temporarily unreachable; missing routes remain valuable after this
+     * state. */
+    desired = DAI_GROWTH_TRADE_NETWORK;
+  } else if (ai->largepox.average_core_size >= 20) {
+    desired = DAI_GROWTH_METROPOLIS;
+  } else if (old_state == DAI_GROWTH_RAPTURE) {
+    /* Keep trying instead of oscillating when a city temporarily loses
+     * happiness or its food surplus. Tax management will reassess the
+     * eligible core every turn. */
+    desired = DAI_GROWTH_RAPTURE;
+  } else if (ai->largepox.rapture_eligible > 0 && adv->celebrate) {
+    desired = DAI_GROWTH_RAPTURE;
+  } else {
+    desired = DAI_GROWTH_RAPTURE_PREP;
+  }
+
+  /* Avoid oscillation while still allowing emergencies immediately. */
+  if (desired != old_state
+      && (desired == DAI_GROWTH_EMERGENCY
+          || old_state == DAI_GROWTH_EMERGENCY
+          || game.info.turn - ai->largepox.last_transition_turn >= 2)) {
+    if (desired == DAI_GROWTH_EXPAND_CORE
+        && old_state != DAI_GROWTH_BOOTSTRAP
+        && old_state != DAI_GROWTH_EXPAND_CORE) {
+      /* Record when the renewed expansion pass began.  Founding a city
+       * refreshes this value naturally on the following update. */
+      ai->largepox.last_city_growth_turn = game.info.turn;
+    }
+    ai->largepox.state = desired;
+    ai->largepox.last_transition_turn = game.info.turn;
+    log_verbose("%s largepox: %s -> %s; core=%d/%d, routes=%d/%d (%d%%), "
+                "rapture=%d/%d, avg-size=%d, support=%d, state-age=%d",
+                player_name(pplayer), dai_largepox_state_name(old_state),
+                dai_largepox_state_name(desired), ai->largepox.core_cities,
+                ai->largepox.target_core_cities,
+                ai->largepox.established_routes, ai->largepox.route_slots,
+                ai->largepox.route_coverage_pct, ai->largepox.rapture_ready,
+                ai->largepox.rapture_eligible,
+                ai->largepox.average_core_size,
+                ai->largepox.support_city_id,
+                state_age);
+  }
 }
 
 /************************************************************************//**

@@ -29,6 +29,14 @@ capabilities="std-terrains"
 [options]
 global_init_buildings="Palace"
 
+[settings]
+; Make the Warclient largepox controller the default for default-AI players
+; whenever this ruleset is selected. Keep it unlocked so hosts can opt out
+; with `/set ailargepox disabled`.
+set={"name","value","lock"
+"ailargepox",TRUE,FALSE
+}
+
 [civstyle]
 
 ; Parameters used to generalize the calculation of city granary size:

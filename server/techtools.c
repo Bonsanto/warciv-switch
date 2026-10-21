@@ -62,6 +62,71 @@ static void research_tech_lost(struct research *presearch,
 static void forget_tech_transferred(struct player *pplayer, Tech_type_id tech);
 
 /************************************************************************//**
+  Return the next Warclient largepox research milestone after 'learned'.
+
+  Route windfalls can contain enough bulbs to finish several technologies
+  recursively inside found_new_tech(), before the AI gets another turn in
+  which to choose a goal.  Keep the server-side continuation deliberately
+  narrow: it applies only to AI-only research groups while the optional
+  largepox policy is enabled.  Human and mixed research groups retain the
+  normal technology-selection behavior.
+****************************************************************************/
+static Tech_type_id
+largepox_followup_tech_goal(const struct research *presearch,
+                            Tech_type_id learned)
+{
+  static const char *const sequence[] = {
+    "Trade", "The Republic", "Seafaring", "Construction", "Democracy",
+    "Sanitation", "University", "Economics", "Explosives", "Railroad",
+    "Refrigeration", "Industrialization", "Mass Production",
+    "Miniaturization"
+  };
+  bool ai_only = TRUE;
+  bool has_players = FALSE;
+
+  if (!game.server.ai_largepox) {
+    return A_UNSET;
+  }
+
+  research_players_iterate(presearch, pplayer) {
+    has_players = TRUE;
+    if (!is_ai(pplayer)) {
+      ai_only = FALSE;
+      break;
+    }
+  } research_players_iterate_end;
+
+  if (!has_players || !ai_only) {
+    return A_UNSET;
+  }
+
+  for (size_t i = 0; i + 1 < ARRAY_SIZE(sequence); i++) {
+    const struct advance *advance = advance_by_rule_name(sequence[i]);
+
+    if (advance == NULL || advance_number(advance) != learned) {
+      continue;
+    }
+
+    for (size_t j = i + 1; j < ARRAY_SIZE(sequence); j++) {
+      const struct advance *followup = advance_by_rule_name(sequence[j]);
+
+      if (followup != NULL) {
+        Tech_type_id tech = advance_number(followup);
+
+        if (tech != A_NONE
+            && research_invention_state(presearch, tech) != TECH_KNOWN
+            && research_invention_reachable(presearch, tech)) {
+          return tech;
+        }
+      }
+    }
+    break;
+  }
+
+  return A_UNSET;
+}
+
+/************************************************************************//**
   Apply a penalty to the research.
 ****************************************************************************/
 void research_apply_penalty(struct research *presearch, Tech_type_id tech,
@@ -499,7 +564,10 @@ void found_new_tech(struct research *presearch, Tech_type_id tech_found,
   free_current_governments_data(could_switch);
 
   if (tech_found == presearch->tech_goal) {
-    presearch->tech_goal = A_UNSET;
+    Tech_type_id followup
+      = largepox_followup_tech_goal(presearch, tech_found);
+
+    presearch->tech_goal = followup;
   }
 
   if (tech_found == presearch->researching) {

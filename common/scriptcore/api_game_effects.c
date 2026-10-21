@@ -158,7 +158,14 @@ int api_effects_tile_bonus(lua_State *L, Tile *ptile, City *pcity,
                                     .tile = ptile,
                                     .output = poutput,
                                   },
-                                  nullptr,
+                                  etype == EFT_TILE_WORKABLE && pcity != nullptr
+                                  ? &(const struct req_context) {
+                                      .player = pplayer,
+                                      .city = pcity,
+                                      .tile = city_tile(pcity),
+                                      .output = poutput,
+                                    }
+                                  : nullptr,
                                   etype);
 }
 

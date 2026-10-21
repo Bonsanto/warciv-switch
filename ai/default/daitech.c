@@ -21,11 +21,13 @@
 #include "log.h"
 
 /* common */
+#include "actions.h"
 #include "game.h"
 #include "government.h"
 #include "player.h"
 #include "research.h"
 #include "tech.h"
+#include "unittype.h"
 
 /* server */
 #include "plrhand.h"
@@ -51,6 +53,202 @@ struct ai_tech_choice {
   adv_want current_want;      /* Want of the tech which is currently researched
                                * or is our current goal */
 };
+
+#define DAI_LARGEPOX_MILESTONE_WANT 1000000
+
+/**********************************************************************//**
+  Return the first positive technology requirement of a government.
+**************************************************************************/
+static Tech_type_id dai_largepox_government_tech(const char *rule_name)
+{
+  const struct government *gov = government_by_rule_name(rule_name);
+
+  if (gov == nullptr) {
+    return A_NONE;
+  }
+
+  requirement_vector_iterate(&gov->reqs, preq) {
+    if (preq->present && VUT_ADVANCE == preq->source.kind) {
+      return advance_number(preq->source.value.advance);
+    }
+  } requirement_vector_iterate_end;
+
+  return A_NONE;
+}
+
+/**********************************************************************//**
+  Return a named milestone when that technology exists and is still unknown.
+**************************************************************************/
+static Tech_type_id dai_largepox_named_tech(struct research *research,
+                                            const char *rule_name)
+{
+  const struct advance *advance = advance_by_rule_name(rule_name);
+
+  if (advance != nullptr) {
+    Tech_type_id tech = advance_number(advance);
+
+    if (tech != A_NONE
+        && research_invention_state(research, tech) != TECH_KNOWN) {
+      return tech;
+    }
+  }
+
+  return A_NONE;
+}
+
+/**********************************************************************//**
+  Keep the Warclient largepox economy out of its observed bootstrap trap.
+
+  Ordinary AI wants repeatedly changed goals while expanding, so the empire
+  reached its city target under Despotism without caravans. Research costs
+  then rose faster than its tiny cities could produce bulbs. Largepox has an
+  explicit economic state machine, so give its enabling milestones a stable
+  order: a trade-route unit first, Republic for the earliest rapture cycle,
+  Construction before the first rapture reaches size eight, Democracy for
+  the efficient mature economy, and Sanitation before size twelve. This
+  mirrors the observed human Warclient opening and prevents a weak AI from
+  choosing Democracy while its whole core is about to hit the Aqueduct cap.
+**************************************************************************/
+static Tech_type_id dai_largepox_tech_milestone(struct ai_type *ait,
+                                                struct player *pplayer)
+{
+  struct ai_plr *ai = def_ai_player_data(pplayer, ait);
+  struct research *research = research_get(pplayer);
+  Tech_type_id milestone = A_NONE;
+  Tech_type_id construction;
+  Tech_type_id seafaring;
+  int trade_role = action_id_get_role(ACTION_TRADE_ROUTE);
+
+  if (!dai_largepox_enabled()) {
+    return A_NONE;
+  }
+
+  if (num_role_units(trade_role) > 0) {
+    const struct unit_type *trade_unit = get_role_unit(trade_role, 0);
+    const struct advance *trade_tech = utype_primary_tech_req(trade_unit);
+
+    if (trade_tech != nullptr) {
+      Tech_type_id tech = advance_number(trade_tech);
+
+      if (tech != A_NONE
+          && research_invention_state(research, tech) != TECH_KNOWN) {
+        milestone = tech;
+      }
+    }
+  }
+
+  if (milestone == A_NONE) {
+    Tech_type_id republic = dai_largepox_government_tech("Republic");
+
+    if (republic != A_NONE
+        && research_invention_state(research, republic) != TECH_KNOWN) {
+      milestone = republic;
+    }
+  }
+
+  /* Coastal largepox cities need their outer ocean ring before rapture.
+   * Seafaring also pulls in Pottery, replacing food-consuming Settlers with
+   * Workers.  In the reference human game this milestone preceded
+   * Construction and Democracy; omitting it left every AI city at radius 8
+   * while all twelve human cities had reached radius 18. */
+  seafaring = dai_largepox_named_tech(research, "Seafaring");
+  if (milestone == A_NONE && seafaring != A_NONE) {
+    milestone = seafaring;
+  }
+
+  construction = dai_largepox_named_tech(research, "Construction");
+  if (milestone == A_NONE && construction != A_NONE) {
+    milestone = construction;
+  }
+
+  if (milestone == A_NONE) {
+    Tech_type_id democracy = dai_largepox_government_tech("Democracy");
+
+    if (democracy != A_NONE
+        && research_invention_state(research, democracy) != TECH_KNOWN) {
+      milestone = democracy;
+    }
+  }
+
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Sanitation");
+  }
+
+  /* After the first rapture prerequisites, keep the economic snowball on
+   * its rails: science multipliers first, then faster terrain development,
+   * railroads/farmland, and finally the mature production chain. */
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "University");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Economics");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Explosives");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Railroad");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Refrigeration");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Industrialization");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Mass Production");
+  }
+  if (milestone == A_NONE) {
+    milestone = dai_largepox_named_tech(research, "Miniaturization");
+  }
+
+  if (milestone != A_NONE) {
+    ai->tech_want[milestone]
+      = MAX(ai->tech_want[milestone], DAI_LARGEPOX_MILESTONE_WANT);
+  }
+
+  return milestone;
+}
+
+/**********************************************************************//**
+  Return the milestone which follows the one currently being completed.
+
+  Freeciv clears a technology goal when that exact technology is learned.
+  Unless the following goal is installed one turn early, the research core
+  immediately selects a random available technology and the normal switching
+  penalty can keep it there.  In the measured opening that inserted Map
+  Making between Trade and Writing, delaying Republic and the first rapture.
+**************************************************************************/
+static Tech_type_id dai_largepox_followup_milestone(
+  struct research *research, Tech_type_id current)
+{
+  static const char *const sequence[] = {
+    "Trade", "The Republic", "Seafaring", "Construction", "Democracy",
+    "Sanitation", "University", "Economics", "Explosives", "Railroad",
+    "Refrigeration", "Industrialization", "Mass Production",
+    "Miniaturization"
+  };
+
+  for (size_t i = 0; i + 1 < ARRAY_SIZE(sequence); i++) {
+    const struct advance *advance = advance_by_rule_name(sequence[i]);
+
+    if (advance != nullptr && advance_number(advance) == current) {
+      for (size_t j = i + 1; j < ARRAY_SIZE(sequence); j++) {
+        const struct advance *followup = advance_by_rule_name(sequence[j]);
+
+        if (followup != nullptr
+            && research_invention_state(research,
+                                        advance_number(followup))
+               != TECH_KNOWN) {
+          return advance_number(followup);
+        }
+      }
+      break;
+    }
+  }
+
+  return A_NONE;
+}
 
 /**********************************************************************//**
   Massage the numbers provided to us by ai.tech_want into unrecognizable
@@ -336,6 +534,7 @@ void dai_manage_tech(struct ai_type *ait, struct player *pplayer)
 {
   struct ai_tech_choice choice, goal;
   struct research *research = research_get(pplayer);
+  Tech_type_id largepox_milestone;
   /* Penalty for switching research */
   /* FIXME: get real penalty with game.server.techpenalty and multiresearch */
   int penalty = research->bulbs_researched - research->free_bulbs;
@@ -344,6 +543,7 @@ void dai_manage_tech(struct ai_type *ait, struct player *pplayer)
   /* Even when we let human to do the final decision, we keep our
    * wants correctly calculated. Add effect values in */
   dai_tech_effect_values(ait, pplayer);
+  largepox_milestone = dai_largepox_tech_milestone(ait, pplayer);
 
   /* If there are humans in our team, they will choose the techs */
   research_players_iterate(research, aplayer) {
@@ -353,6 +553,50 @@ void dai_manage_tech(struct ai_type *ait, struct player *pplayer)
   } research_players_iterate_end;
 
   dai_select_tech(ait, pplayer, &choice, &goal);
+
+  if (largepox_milestone != A_NONE) {
+    bool current_on_path
+      = research->researching == largepox_milestone
+        || (valid_advance_by_number(research->researching) != nullptr
+            && research_goal_tech_req(research, largepox_milestone,
+                                      research->researching));
+
+    /* A large numeric want still allowed a nearer generic goal to win after
+     * division by the number of unknown prerequisites.  That made otherwise
+     * identical Hard AIs discover Trade anywhere from turn 39 to turn 51.
+     * The largepox state machine depends on these milestones, so make the
+     * strategic goal authoritative and only retain current research when it
+     * is genuinely on that prerequisite path. */
+    goal.choice = largepox_milestone;
+    if (!current_on_path) {
+      Tech_type_id step;
+
+      if (research_invention_state(research, largepox_milestone)
+          == TECH_PREREQS_KNOWN) {
+        step = largepox_milestone;
+      } else {
+        step = research_goal_step(research, largepox_milestone);
+      }
+
+      if (step != A_UNSET) {
+        choice.choice = step;
+        choice.want = DAI_LARGEPOX_MILESTONE_WANT;
+        choice.current_want = 0;
+      }
+    }
+
+    if (research->researching == largepox_milestone) {
+      Tech_type_id followup
+        = dai_largepox_followup_milestone(research, largepox_milestone);
+
+      if (followup != A_NONE) {
+        /* Set the next strategic goal before the current milestone is
+         * learned. The server then chooses its first prerequisite directly
+         * instead of falling through to an unrelated random technology. */
+        goal.choice = followup;
+      }
+    }
+  }
   if (choice.choice != research->researching) {
     /* changing */
     if (choice.want - choice.current_want > penalty

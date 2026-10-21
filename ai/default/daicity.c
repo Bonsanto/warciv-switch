@@ -26,6 +26,7 @@
 #include "actions.h"
 #include "game.h"
 #include "government.h"
+#include "improvement.h"
 #include "map.h"
 #include "research.h"
 #include "specialist.h"
@@ -273,7 +274,12 @@ static void dai_city_choose_build(struct ai_type *ait,
     dai_barbarian_choose_build(pplayer, pcity, &(city_data->choice));
   } else {
     if ((city_data->choice.want < DAI_WANT_MILITARY_EMERGENCY
-         || city_data->urgency == 0)
+         || city_data->urgency == 0
+         /* Distant or merely hypothetical attackers must not permanently
+          * turn an isolated largepox economy into ships.  A unit able to
+          * attack next turn still sets grave_danger and keeps the normal
+          * military override. */
+         || (dai_largepox_enabled() && city_data->grave_danger == 0))
         && !(dai_on_war_footing(ait, pplayer) && city_data->choice.want > 0
              && pcity->id != adv->wonder_city)) {
       newchoice = domestic_advisor_choose_build(ait, pplayer, pcity);
@@ -281,6 +287,7 @@ static void dai_city_choose_build(struct ai_type *ait,
                       adv_better_choice(&(city_data->choice), newchoice));
       adv_free_choice(newchoice);
     }
+
   }
 
   /* Fallbacks */
@@ -289,7 +296,15 @@ static void dai_city_choose_build(struct ai_type *ait,
     CITY_LOG(LOG_WANT, pcity, "Falling back - didn't want to build soldiers,"
              " workers, caravans, settlers, or buildings!");
     city_data->choice.want = 1;
-    if (best_role_unit(pcity, action_id_get_role(ACTION_TRADE_ROUTE))) {
+    if (dai_largepox_enabled()
+        && dai_largepox_city_is_support(ait, pplayer, pcity)
+        && best_role_unit(pcity, UTYF_WORKERS)) {
+      city_data->choice.value.utype
+        = dai_role_utype_for_terrain_class(pcity, UTYF_WORKERS, TC_LAND);
+      city_data->choice.type = CT_CIVILIAN;
+      adv_choice_set_use(&(city_data->choice), "largepox support worker");
+    } else if (best_role_unit(pcity,
+                              action_id_get_role(ACTION_TRADE_ROUTE))) {
       city_data->choice.value.utype
         = best_role_unit(pcity, action_id_get_role(ACTION_TRADE_ROUTE));
       city_data->choice.type = CT_CIVILIAN;
@@ -530,6 +545,82 @@ static void unit_do_disband_trad(struct player *owner, struct unit *punit,
 }
 
 /**********************************************************************//**
+  Return authoritative route coverage for purchase decisions.
+
+  Route actions can complete after the largepox phase snapshot was built.
+  Crash-buying from that stale snapshot spends the new windfall on another
+  caravan wave instead of the economic building already selected by cities.
+**************************************************************************/
+static int dai_largepox_actual_route_coverage(const struct player *pplayer)
+{
+  int established = 0;
+  int slots = 0;
+
+  city_list_iterate(pplayer->cities, pcity) {
+    established += city_num_trade_routes(pcity);
+    slots += max_trade_routes(pcity);
+  } city_list_iterate_end;
+
+  return slots > 0 ? MIN(100, 100 * established / slots) : 100;
+}
+
+/**********************************************************************//**
+  True once the core can start buying the post-route Worker wave.
+
+  The reference opening keeps its initial three Workers through the caravan
+  phase, then grows quickly toward one per city.  Requiring every city to
+  finish its foundation first is too late; three quarters with Marketplace
+  and Aqueduct is enough to start a bounded wave while the economic chain
+  retains the larger purchase desire.
+**************************************************************************/
+static bool dai_largepox_worker_purchase_ready(struct ai_type *ait,
+                                                const struct player *pplayer)
+{
+  const struct impr_type *marketplace
+    = improvement_by_rule_name("Marketplace");
+  const struct impr_type *aqueduct = improvement_by_rule_name("Aqueduct");
+  int core = 0;
+  int ready = 0;
+
+  if (dai_largepox_actual_route_coverage(pplayer) < 75
+      || marketplace == nullptr || aqueduct == nullptr) {
+    return FALSE;
+  }
+
+  city_list_iterate(pplayer->cities, pcity) {
+    if (dai_largepox_city_is_support(ait, pplayer, pcity)) {
+      continue;
+    }
+    core++;
+    if (city_has_building(pcity, marketplace)
+        && city_has_building(pcity, aqueduct)) {
+      ready++;
+    }
+  } city_list_iterate_end;
+
+  return core > 0 && ready * 4 >= core * 3;
+}
+
+/**********************************************************************//**
+  Count completed non-founder terrain improvers.
+**************************************************************************/
+static int dai_largepox_workers(const struct player *pplayer)
+{
+  int workers = 0;
+
+  unit_list_iterate(pplayer->units, punit) {
+    const struct unit_type *utype = unit_type_get(punit);
+
+    if (utype_has_flag(utype, UTYF_WORKERS)
+        && !utype_is_cityfounder(utype)) {
+      workers++;
+    }
+  } unit_list_iterate_end;
+
+  return workers;
+}
+
+/**********************************************************************//**
   Buy and upgrade stuff!
 **************************************************************************/
 static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
@@ -559,22 +650,77 @@ static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
 
   do {
     bool expensive; /* Don't buy when it costs x2 unless we must */
+    bool largepox_founder_purchase = FALSE;
+    bool largepox_growth_purchase = FALSE;
+    bool largepox_trade_purchase = FALSE;
+    bool largepox_economic_purchase = FALSE;
+    bool largepox_worker_purchase = FALSE;
     int buycost;
     int limit = cached_limit; /* cached_limit is our gold reserve */
     struct city *pcity = nullptr;
     struct ai_city *city_data;
 
-    /* Find highest wanted item on the buy list */
+    /* In the opening trade wave, spend the first route windfall on the
+     * cheapest nearly-complete caravans first.  Their strategic wants are
+     * intentionally similar, so ordinary city-list ordering used to buy two
+     * expensive caravans while five builds with 25--40 accumulated shields
+     * waited.  That delayed the compounding second route wave by three turns.
+     * Restrict this ordering to safe, partially-built caravans and the first
+     * three quarters of the route network; later economic purchases retain
+     * their normal priority. */
     adv_init_choice(&bestchoice);
-    city_list_iterate(pplayer->cities, acity) {
-      struct ai_city *acity_data = def_ai_city_data(acity, ait);
+    if (dai_largepox_enabled()
+        && dai_largepox_actual_route_coverage(pplayer) < 75
+        && dai_largepox_state(ait, pplayer) != DAI_GROWTH_EMERGENCY) {
+      int cheapest_trade = FC_INFINITY;
 
-      if (acity_data->choice.want
-          > bestchoice.want && ai_fuzzy(pplayer, TRUE)) {
-        adv_choice_copy(&bestchoice, &(acity_data->choice));
-        pcity = acity;
-      }
-    } city_list_iterate_end;
+      city_list_iterate(pplayer->cities, acity) {
+        struct ai_city *acity_data = def_ai_city_data(acity, ait);
+        int routes_and_caravans;
+        int candidate_cost;
+
+        if (acity_data->urgency > 1 || acity_data->choice.want <= 0
+            || !is_unit_choice_type(acity_data->choice.type)
+            || acity_data->choice.value.utype == nullptr
+            || !utype_can_do_action(acity_data->choice.value.utype,
+                                    ACTION_TRADE_ROUTE)
+            || VUT_UTYPE != acity->production.kind
+            || !utype_can_do_action(acity->production.value.utype,
+                                    ACTION_TRADE_ROUTE)
+            || acity->shield_stock <= 0) {
+          continue;
+        }
+
+        routes_and_caravans = city_num_trade_routes(acity);
+        unit_list_iterate(acity->units_supported, punit) {
+          if (unit_can_do_action(punit, ACTION_TRADE_ROUTE)) {
+            routes_and_caravans++;
+          }
+        } unit_list_iterate_end;
+
+        candidate_cost = city_production_buy_gold_cost(acity);
+        if (routes_and_caravans < max_trade_routes(acity)
+            && candidate_cost > 0 && candidate_cost < cheapest_trade
+            && pplayer->economic.gold - expenses >= candidate_cost) {
+          cheapest_trade = candidate_cost;
+          adv_choice_copy(&bestchoice, &(acity_data->choice));
+          pcity = acity;
+        }
+      } city_list_iterate_end;
+    }
+
+    /* Outside that explicit opening order, buy the highest wanted item. */
+    if (pcity == nullptr) {
+      city_list_iterate(pplayer->cities, acity) {
+        struct ai_city *acity_data = def_ai_city_data(acity, ait);
+
+        if (acity_data->choice.want
+            > bestchoice.want && ai_fuzzy(pplayer, TRUE)) {
+          adv_choice_copy(&bestchoice, &(acity_data->choice));
+          pcity = acity;
+        }
+      } city_list_iterate_end;
+    }
 
     /* We found nothing, so we're done */
     if (pcity == nullptr) {
@@ -582,6 +728,119 @@ static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
     }
 
     city_data = def_ai_city_data(pcity, ait);
+
+    /* A human largepox opening reinvests its first treasury in the last
+     * opening Settlers.  The generic AI has a hard "no Settler purchases
+     * after six cities" rule, which left 70+ gold idle and delayed the
+     * 5 -> 9 -> 12 expansion by a full research cycle.  Permit only a safe,
+     * partially-built founder: buying from zero shields pays the punitive
+     * double rate, and a city at the population cost cannot complete it. */
+    if (dai_largepox_enabled()
+        && is_unit_choice_type(bestchoice.type)
+        && utype_is_cityfounder(bestchoice.value.utype)
+        && VUT_UTYPE == pcity->production.kind
+        && utype_is_cityfounder(pcity->production.value.utype)
+        && city_list_size(pplayer->cities)
+           < dai_largepox_total_city_target(ait, pplayer)
+        && (dai_largepox_state(ait, pplayer) == DAI_GROWTH_BOOTSTRAP
+            || dai_largepox_state(ait, pplayer) == DAI_GROWTH_EXPAND_CORE)
+        && pcity->shield_stock > 0
+        && city_size_get(pcity) > pcity->production.value.utype->pop_cost) {
+      largepox_founder_purchase = TRUE;
+    }
+
+    /* The buy cost below is for the city's current production, which can
+     * differ from the advisor's newest choice until change_build_target()
+     * runs.  Inspect that real target here; otherwise largepox empires save
+     * thousands of gold while capped cities slowly hand-build Aqueducts. */
+    if (dai_largepox_enabled()
+        && VUT_IMPROVEMENT == pcity->production.kind
+        && (building_has_effect(pcity->production.value.building,
+                                EFT_SIZE_ADJ)
+            || building_has_effect(pcity->production.value.building,
+                                   EFT_SIZE_UNLIMIT))) {
+      int size_limit = get_city_bonus(pcity, EFT_SIZE_ADJ);
+
+      largepox_growth_purchase
+        = get_city_bonus(pcity, EFT_SIZE_UNLIMIT) <= 0
+          && city_size_get(pcity) >= MAX(1, size_limit - 1);
+    }
+
+    /* The human Warclient opening converts the first caravans' arrival
+     * bonuses directly into the rest of the route network.  Do the same only
+     * through the first three quarters of the network.  Past that point the
+     * caravans already in flight can finish the remaining routes, while the
+     * treasury must capitalize the core instead of rush-buying a final wave
+     * ahead of Marketplaces, Aqueducts, and Banks.  Counting supported
+     * caravans prevents several idle purchases for the same slot. */
+    if (dai_largepox_enabled()
+        && is_unit_choice_type(bestchoice.type)
+        && bestchoice.value.utype != nullptr
+        && utype_can_do_action(bestchoice.value.utype,
+                               ACTION_TRADE_ROUTE)
+        && VUT_UTYPE == pcity->production.kind
+        && utype_can_do_action(pcity->production.value.utype,
+                               ACTION_TRADE_ROUTE)) {
+      int routes_and_caravans = city_num_trade_routes(pcity);
+
+      unit_list_iterate(pcity->units_supported, punit) {
+        if (unit_can_do_action(punit, ACTION_TRADE_ROUTE)) {
+          routes_and_caravans++;
+        }
+      } unit_list_iterate_end;
+
+      largepox_trade_purchase
+        = dai_largepox_actual_route_coverage(pplayer) < 75
+          && routes_and_caravans < max_trade_routes(pcity)
+          && dai_largepox_state(ait, pplayer) != DAI_GROWTH_EMERGENCY;
+    }
+
+    if (dai_largepox_enabled()
+        && VUT_IMPROVEMENT == pcity->production.kind
+        && dai_largepox_state(ait, pplayer) != DAI_GROWTH_EMERGENCY) {
+      const struct impr_type *building = pcity->production.value.building;
+
+      /* Reinvest route-arrival gold in the explicit economic backbone once
+       * the empire-wide network is half complete.  Looking only at local
+       * routes left peripheral cities poor even though their partners had
+       * already generated the shared treasury used for these purchases. */
+      if (dai_largepox_actual_route_coverage(pplayer) >= 50) {
+        static const char *const chain[] = {
+          "Marketplace", "Bank", "Harbour", "Aqueduct",
+          "Stock Exchange", "Library", "Sewer System", "University",
+          "Factory", "Offshore Platform", "Supermarket", "Mass Transit"
+        };
+
+        for (size_t i = 0; i < ARRAY_SIZE(chain); i++) {
+          if (0 == fc_strcasecmp(improvement_rule_name(building), chain[i])) {
+            largepox_economic_purchase = TRUE;
+            break;
+          }
+        }
+
+        largepox_economic_purchase
+          = largepox_economic_purchase
+            || building_has_effect(building, EFT_CITY_RADIUS_SQ);
+      }
+    }
+
+    /* Turn route windfalls into enough terrain capacity to irrigate the
+     * complete dense core.  Economic-chain choices have much larger wants
+     * and are bought first; this exception only lets the remaining treasury
+     * finish the bounded Worker wave instead of sitting idle. */
+    if (dai_largepox_enabled()
+        && dai_largepox_worker_purchase_ready(ait, pplayer)
+        && dai_largepox_workers(pplayer)
+           < city_list_size(pplayer->cities)
+        && is_unit_choice_type(bestchoice.type)
+        && bestchoice.value.utype != nullptr
+        && utype_has_flag(bestchoice.value.utype, UTYF_WORKERS)
+        && !utype_is_cityfounder(bestchoice.value.utype)
+        && VUT_UTYPE == pcity->production.kind
+        && utype_has_flag(pcity->production.value.utype, UTYF_WORKERS)
+        && !utype_is_cityfounder(pcity->production.value.utype)) {
+      largepox_worker_purchase = TRUE;
+    }
 
     /* Not dealing with this city a second time */
     city_data->choice.want = -1;
@@ -628,7 +887,8 @@ static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
          * order of end/start turn activities is such that settler building
          * fails already before city grows. */
         continue;
-      } else if (city_list_size(pplayer->cities) > 6) {
+      } else if (city_list_size(pplayer->cities) > 6
+                 && !largepox_founder_purchase) {
         /* Don't waste precious money buying settlers late game
          * since this raises taxes, and we want science. Adjust this
          * again when our tax algorithm is smarter. */
@@ -636,7 +896,9 @@ static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
       } else if (war_footing) {
         continue;
       }
-    } else {
+    } else if (!largepox_growth_purchase && !largepox_trade_purchase
+               && !largepox_economic_purchase
+               && !largepox_worker_purchase) {
       /* We are not a settler. Therefore we increase the cash need we
        * balance our buy desire with to keep cash at hand for emergencies
        * and for upgrades */
@@ -662,6 +924,11 @@ static void dai_spend_gold(struct ai_type *ait, struct player *pplayer)
 
     if (pplayer->economic.gold - expenses >= buycost
         && (!expensive
+            || largepox_growth_purchase
+            || largepox_founder_purchase
+            || largepox_trade_purchase
+            || largepox_economic_purchase
+            || largepox_worker_purchase
             || (city_data->grave_danger != 0
                 && assess_defense(ait, pcity) == 0)
             || (bestchoice.want > 200 && city_data->urgency > 1))) {
@@ -970,11 +1237,32 @@ void dai_manage_cities(struct ai_type *ait, struct player *pplayer)
   city_list_iterate(pplayer->cities, pcity) {
     dai_city_choose_build(ait, pplayer, pcity);
 
-    /* Initialize for next turn */
-    def_ai_city_data(pcity, ait)->choice.want = -1;
+    /* Production selection does not normally alter tile yields, so changing
+     * to a founder does not itself invoke auto_arrange_workers(). Run it here
+     * to activate the shield-oriented largepox opening immediately instead
+     * of waiting for an unrelated city-map event. */
+    if (dai_largepox_enabled()
+        && pcity->production.kind == VUT_UTYPE
+        && utype_is_cityfounder(pcity->production.value.utype)) {
+      auto_arrange_workers(pcity);
+    }
+
+    /* The ordinary AI historically clears these choices before its gold
+     * pass.  Largepox needs them one moment longer so that route caravans
+     * and population-limit buildings can actually be crash-bought. */
+    if (!dai_largepox_enabled()) {
+      def_ai_city_data(pcity, ait)->choice.want = -1;
+    }
   } city_list_iterate_end;
 
   dai_spend_gold(ait, pplayer);
+
+  if (dai_largepox_enabled()) {
+    city_list_iterate(pplayer->cities, pcity) {
+      /* Initialize for next turn after the gold pass consumed the choice. */
+      def_ai_city_data(pcity, ait)->choice.want = -1;
+    } city_list_iterate_end;
+  }
 }
 
 /**********************************************************************//**
@@ -1975,6 +2263,81 @@ void dai_build_adv_init(struct ai_type *ait, struct player *pplayer)
 }
 
 /**********************************************************************//**
+  Apply state-dependent largepox weights without relying on building names.
+  This keeps the strategy usable by rulesets that express equivalent
+  economic and growth buildings with different names.
+**************************************************************************/
+static void dai_largepox_adjust_building_want(struct ai_type *ait,
+                                              struct player *pplayer,
+                                              struct city *pcity,
+                                              const struct impr_type *pimprove)
+{
+  int idx = improvement_index(pimprove);
+  adv_want *want = &pcity->server.adv->building_want[idx];
+  enum dai_growth_state state;
+  bool economic, growth, happiness;
+  int pct = 100;
+
+  if (!dai_largepox_enabled() || *want <= 0) {
+    return;
+  }
+
+  state = dai_largepox_state(ait, pplayer);
+  if (dai_largepox_city_is_support(ait, pplayer, pcity)) {
+    pct = state == DAI_GROWTH_EXPAND_CORE ? 60 : 25;
+    *want = *want * pct / 100;
+    return;
+  }
+
+  economic = building_has_effect(pimprove, EFT_OUTPUT_BONUS)
+             || building_has_effect(pimprove, EFT_OUTPUT_BONUS_2)
+             || building_has_effect(pimprove, EFT_MAX_TRADE_ROUTES)
+             || building_has_effect(pimprove, EFT_TRADE_ROUTE_PCT);
+  growth = building_has_effect(pimprove, EFT_SIZE_ADJ)
+           || building_has_effect(pimprove, EFT_GROWTH_FOOD)
+           || building_has_effect(pimprove, EFT_CITY_RADIUS_SQ)
+           || building_has_effect(pimprove, EFT_OUTPUT_INC_TILE_CELEBRATE);
+  happiness = building_has_effect(pimprove, EFT_MAKE_HAPPY)
+              || building_has_effect(pimprove, EFT_MAKE_CONTENT)
+              || building_has_effect(pimprove, EFT_FORCE_CONTENT);
+
+  switch (state) {
+  case DAI_GROWTH_TRADE_NETWORK:
+    if (economic) {
+      pct = 200;
+    } else if (happiness) {
+      pct = 140;
+    }
+    break;
+  case DAI_GROWTH_RAPTURE_PREP:
+    if (economic || growth || happiness) {
+      pct = 225;
+    }
+    break;
+  case DAI_GROWTH_RAPTURE:
+    if (growth || happiness) {
+      pct = 200;
+    } else if (economic) {
+      pct = 160;
+    }
+    break;
+  case DAI_GROWTH_METROPOLIS:
+    if (economic) {
+      pct = 200;
+    } else if (growth || happiness) {
+      pct = 140;
+    }
+    break;
+  case DAI_GROWTH_BOOTSTRAP:
+  case DAI_GROWTH_EXPAND_CORE:
+  case DAI_GROWTH_EMERGENCY:
+    break;
+  }
+
+  *want = *want * pct / 100;
+}
+
+/**********************************************************************//**
   Calculate how much an AI player should want to build particular
   improvements, because of the effects of those improvements, and
   increase the want for technologies that will enable buildings with
@@ -2050,6 +2413,8 @@ void dai_build_adv_adjust(struct ai_type *ait, struct player *pplayer,
                   * TRAIT_DEFAULT_VALUE
                   / ai_trait_get_value(TRAIT_EXPANSIONIST, pplayer);
           }
+
+          dai_largepox_adjust_building_want(ait, pplayer, pcity, pimprove);
         }
         /* else wait until a later turn */
       } city_list_iterate_end;

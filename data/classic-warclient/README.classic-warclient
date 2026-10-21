@@ -8,7 +8,7 @@ the familiar classic game while restoring and extending Warclient-style play.
 Highlights
 ----------
 
-- Four base trade routes per city with Warclient-style recurring revenue
+- Four base trade routes per city with a 2.00x Warclient-style recurring bonus
 - Civ I/II-style research costs
 - Square city radius and matching city vision
 - Rapture-oriented city management presets
@@ -17,7 +17,29 @@ Highlights
 
 The accompanying ``classic-warclient-competitive.serv`` profile supplies the
 recommended map and server settings, including archipelago-shaped islands,
-independent lake and river density, and increased natural resources.
+independent lake and river density, increased natural resources, and the
+optional explainable ``ailargepox`` strategy for default AI players. Largepox
+builds seven to eleven core cities according to available island land, plus one
+support city. It places the core as a trade graph, establishes at least 80%
+of its route capacity, and then attempts uninterrupted rapture growth in core
+cities of size three or greater while continuing to fill remaining routes.
+The research milestones are Trade, Republic, Construction, Democracy, and
+Sanitation; population-limit buildings override additional caravans, and
+route income can be reinvested immediately in missing routes and growth
+buildings. Smaller islands reduce the city target; normal largepox islands
+use remaining legal coastal gaps before switching fully to vertical growth.
+If exploration temporarily exposes no useful site, the AI may start its trade
+network and resume expansion in bounded windows when a valid site appears;
+Settlers doing terrain work do not falsely count as pending cities. The largepox
+settler evaluates the full future city radius, softly penalizes overlap, and
+rewards sites which complete useful four-route partnerships instead of
+accepting the first smallpox-style location nearby. The trade-network phase
+is capped at 28 turns so difficult geography cannot stall growth forever.
+During rapture the city manager reserves food, includes size-two cities in
+the happiness plan for their next growth turn, and keeps a small luxury margin
+so shared tiles do not repeatedly cancel celebration. It is enabled by
+default when this ruleset is selected and can be disabled with
+``/set ailargepox disabled``.
 
 From a build directory, launch the server with:
 
